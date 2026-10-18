@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>Super Flow</string>
+	<key>CFBundleExecutable</key>
+	<string>SuperFlow</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.udsy.superflow</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Super Flow</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.udsy.superflow</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>superflow</string>
+			</array>
+		</dict>
+	</array>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>NSAccessibilityUsageDescription</key>
+	<string>Super Flow uses Accessibility to put your spoken words into the text box you are typing in, to read a little text around the cursor for spelling and context, and to notice when a meeting app is running.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Super Flow sends Apple events only to paste text into another app or open a meeting link when you ask it to.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Super Flow needs your computer's audio to transcribe the other participants in your meetings. Audio never leaves this Mac.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Super Flow reads your calendar to name meetings, suggest who is speaking and remind you before a meeting starts. Nothing is written to your calendar.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Super Flow listens only while you dictate or record a meeting, and transcribes everything on this Mac.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Super Flow can use Apple's on-device speech recognition as an optional engine. Audio never leaves this Mac.</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright © 2026 Udaya Vijay Anand. MIT License.</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSSupportsAutomaticTermination</key>
+	<false/>
+	<key>NSSupportsSuddenTermination</key>
+	<false/>
+</dict>
+</plist>
