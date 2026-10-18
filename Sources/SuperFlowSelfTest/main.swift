@@ -32,6 +32,7 @@ registerUpdateKitTests()
 registerAudioKitTests()
 registerSpeechKitTests()
 registerInsertionKitTests()
+registerCleanupKitTests()
 registerNativeSmokeTests()
 
 for (name, run) in SelfTest.cases {
