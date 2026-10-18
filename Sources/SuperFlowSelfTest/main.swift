@@ -30,6 +30,7 @@ registerCoreTests()
 registerFlowStoreTests()
 registerUpdateKitTests()
 registerAudioKitTests()
+registerInsertionKitTests()
 registerNativeSmokeTests()
 
 for (name, run) in SelfTest.cases {
