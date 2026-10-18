@@ -29,6 +29,7 @@ Defaults.store = UserDefaults(suiteName: defaultsSuite)!
 registerCoreTests()
 registerFlowStoreTests()
 registerUpdateKitTests()
+registerAudioKitTests()
 registerNativeSmokeTests()
 
 for (name, run) in SelfTest.cases {
