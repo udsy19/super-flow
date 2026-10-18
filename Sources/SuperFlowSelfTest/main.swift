@@ -35,6 +35,7 @@ registerInsertionKitTests()
 registerFlowBarKitTests()
 registerCleanupKitTests()
 registerMeetingKitTests()
+registerHubKitTests()
 registerNativeSmokeTests()
 
 for (name, run) in SelfTest.cases {
