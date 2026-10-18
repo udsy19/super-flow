@@ -30,6 +30,7 @@ registerCoreTests()
 registerFlowStoreTests()
 registerUpdateKitTests()
 registerAudioKitTests()
+registerSpeechKitTests()
 registerInsertionKitTests()
 registerNativeSmokeTests()
 
