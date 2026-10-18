@@ -350,10 +350,12 @@ public final class ModelManager: ModelManaging {
         let layout = layout(model)
         let configuration = sessionConfiguration(!explicit)
         rateSamples = []
+        let throttle = ProgressThrottle()
         let task = Task { [weak self] in
             var failure: Error?
             do {
                 try await ModelManager.perform(layout, configuration: configuration, retryDelays: self?.retryDelays ?? []) { done, total in
+                    guard throttle.admit(done: done, total: total) else { return }
                     Task { @MainActor in self?.report(id, done: done, total: total) }
                 }
             } catch {
@@ -504,6 +506,22 @@ public final class ModelManager: ModelManaging {
         let waiting = listeners.removeValue(forKey: id) ?? []
         for continuation in waiting {
             if let error { continuation.finish(throwing: error) } else { continuation.finish() }
+        }
+    }
+}
+
+/// Lets a progress update through at most every 100 ms (and always the last one), so a gigabyte download does not
+/// schedule a main-actor hop per network chunk.
+private final class ProgressThrottle: @unchecked Sendable {
+    private let lock = NSLock()
+    private var last = Date.distantPast
+
+    func admit(done: Int64, total: Int64) -> Bool {
+        lock.withLock {
+            let now = Date()
+            guard done >= total || now.timeIntervalSince(last) >= 0.1 else { return false }
+            last = now
+            return true
         }
     }
 }
