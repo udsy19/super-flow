@@ -1054,8 +1054,12 @@ private func meetingExport() {
         return meeting
     }
     let old = meeting(endedDaysAgo: 31), recent = meeting(endedDaysAgo: 5)
+    var untranscribed = meeting(endedDaysAgo: 40)
+    untranscribed.segments = []
+    try? fakes.store.save(untranscribed)
     check(Defaults[.meetingAudioRetentionDays] == 30, "owner decision: 30 days by default")
     check(recorder.pruneAudio(now: now) == [old.id], "audio older than 30 days is deleted")
+    check(fakes.store.rows[untranscribed.id]?.hasAudio == true, "but not when it's the meeting's only record (nothing was transcribed)")
     check(!FileManager.default.fileExists(atPath: SuperFlowPaths.meetingAudio.appendingPathComponent(old.id.uuidString).path), "old audio folder gone")
     check(fakes.store.rows[old.id]?.audioDeletedAt == now && fakes.store.rows[old.id]?.segments.first?.text == "kept"
           && fakes.store.rows[old.id]?.notes == "kept too", "transcript and notes kept")

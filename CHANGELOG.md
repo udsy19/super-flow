@@ -67,3 +67,5 @@ All notable changes to Super Flow are recorded here. The format follows Keep a C
   app quits. A meeting note or a dictionary star that can't be saved says so instead of failing silently.
 - A microphone that is unplugged, or won't restart after a format change, hands capture to the system default input
   instead of leaving the recording silent.
+- Meeting audio retention never deletes audio that is a meeting's only record (nothing was transcribed), so "Retry
+  transcript" keeps working; the meeting page no longer shows an expiry date for it.

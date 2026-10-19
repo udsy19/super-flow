@@ -149,6 +149,9 @@ private func coreRetention() {
     deleted.audioDeletedAt = now
     check(!RetentionPolicy.shouldDeleteAudio(of: deleted, audioDays: 30, now: now), "already deleted")
     check(!RetentionPolicy.shouldDeleteAudio(of: sampleMeeting(endedAt: nil), audioDays: 30, now: now), "a running meeting is never pruned")
+    var untranscribed = ended31
+    untranscribed.segments = []
+    check(!RetentionPolicy.shouldDeleteAudio(of: untranscribed, audioDays: 30, now: now), "audio that is a meeting's only record is kept")
     check(!RetentionPolicy.shouldDeleteMeeting(ended31, transcriptDays: 0, now: now), "transcripts kept forever by default")
     check(RetentionPolicy.shouldDeleteMeeting(ended31, transcriptDays: 7, now: now) && !RetentionPolicy.shouldDeleteMeeting(ended29, transcriptDays: 30, now: now),
           "transcript retention")

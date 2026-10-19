@@ -26,9 +26,11 @@ public enum RetentionPolicy {
         now.addingTimeInterval(-Double(DictationLimits.dictationAudioRetentionDays) * 86_400)
     }
 
-    /// Whether a meeting's audio should be deleted now: it ended more than `audioDays` ago and still has audio.
+    /// Whether a meeting's audio should be deleted now: it ended more than `audioDays` ago and still has audio. Audio
+    /// that is the meeting's only record (nothing was transcribed: the engine failed or wasn't there) is kept, so
+    /// "Retry transcript" still works and retention never deletes words that exist nowhere else.
     public static func shouldDeleteAudio(of meeting: Meeting, audioDays: Int, now: Date = Date()) -> Bool {
-        guard meeting.hasAudio, let ended = meeting.endedAt, let cutoff = cutoff(days: audioDays, now: now) else { return false }
+        guard meeting.hasAudio, meeting.hasTranscript, let ended = meeting.endedAt, let cutoff = cutoff(days: audioDays, now: now) else { return false }
         return ended < cutoff
     }
 

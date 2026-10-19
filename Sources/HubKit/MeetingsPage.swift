@@ -289,7 +289,7 @@ public enum MeetingRetry {
 
     /// "Retry transcript" is offered: nothing was transcribed, the audio is still there, and nothing is running on it.
     public static func canRetryTranscript(_ meeting: Meeting) -> Bool {
-        MeetingExport.finalSegments(meeting.segments).isEmpty && meeting.hasAudio && isIdle(meeting)
+        !meeting.hasTranscript && meeting.hasAudio && isIdle(meeting)
     }
 
     private static func isIdle(_ meeting: Meeting) -> Bool {

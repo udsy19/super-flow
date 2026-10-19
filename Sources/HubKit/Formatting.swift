@@ -84,7 +84,8 @@ public enum HubFormat {
 
     /// When a meeting's audio will be deleted under the retention, or nil when it is kept forever or already gone.
     public static func audioExpiry(of meeting: Meeting, days: Int) -> Date? {
-        guard meeting.hasAudio, days > RetentionPolicy.keepForever else { return nil }
+        // Audio that is the meeting's only record isn't deleted by retention (`RetentionPolicy.shouldDeleteAudio`).
+        guard meeting.hasAudio, meeting.hasTranscript, days > RetentionPolicy.keepForever else { return nil }
         return (meeting.endedAt ?? meeting.startedAt).addingTimeInterval(Double(days) * 86_400)
     }
 

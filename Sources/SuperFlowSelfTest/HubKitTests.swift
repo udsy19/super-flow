@@ -140,8 +140,12 @@ func registerHubKitTests() {
         check(MeetingExport.fileName(for: meeting, format: .markdown).hasSuffix("Launch   review 2025-10-09.md")
                   && !MeetingExport.fileName(for: meeting, format: .markdown).contains("/"),
               "file name is safe")
-        check(HubFormat.audioExpiry(of: Meeting(title: "x", startedAt: start, endedAt: start, tracks: [AudioTrack(channel: .mic, file: "mic.caf")]),
-                                    days: 30) == start.addingTimeInterval(30 * 86_400), "audio expiry from the end of the meeting")
+        let recorded = Meeting(title: "x", startedAt: start, endedAt: start, tracks: [AudioTrack(channel: .mic, file: "mic.caf")],
+                               segments: [TranscriptSegment(start: 0, end: 1, text: "Hello.")])
+        check(HubFormat.audioExpiry(of: recorded, days: 30) == start.addingTimeInterval(30 * 86_400), "audio expiry from the end of the meeting")
+        var untranscribed = recorded
+        untranscribed.segments = []
+        check(HubFormat.audioExpiry(of: untranscribed, days: 30) == nil, "audio that is the only record doesn't expire")
         check(HubFormat.audioExpiry(of: meeting, days: 30) == nil, "no audio, no expiry")
     }))
 

@@ -572,6 +572,8 @@ public struct Meeting: Codable, Hashable, Identifiable, Sendable {
 
     public var duration: TimeInterval { (endedAt ?? Date()).timeIntervalSince(startedAt) }
     public var hasAudio: Bool { !tracks.isEmpty && audioDeletedAt == nil }
+    /// Something was transcribed; without it the audio is the meeting's only record.
+    public var hasTranscript: Bool { !MeetingExport.finalSegments(segments).isEmpty }
     public var transcriptText: String {
         segments.filter(\.isFinal).map { "\(speakerLabel(for: $0)): \($0.text)" }.joined(separator: "\n")
     }
