@@ -116,6 +116,8 @@ final class HubState: ObservableObject {
     @Published var onboardingStep: OnboardingStep = .welcome
     @Published var modal: HubModal?
     @Published var toast: HubToast?
+    /// Set by the bar's Quick note: the Notes page selects this note, focuses its editor and clears it.
+    @Published var quickNoteID: UUID?
 
     func go(_ section: HubSection) {
         self.section = section

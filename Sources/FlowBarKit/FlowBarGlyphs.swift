@@ -40,7 +40,7 @@ enum FlowBarGlyphs {
         color.set(); path.stroke()
     }
 
-    /// Record: a ring around a filled dot ("Take notes", §10.2).
+    /// Record: a ring around a filled dot (the meeting-detected prompt's icon, §10.2).
     static func record(in r: CGRect, color: NSColor) {
         color.set()
         let ring = NSBezierPath(ovalIn: r.insetBy(dx: 0.75, dy: 0.75))

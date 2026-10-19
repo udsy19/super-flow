@@ -28,6 +28,13 @@ public final class NotesStore: ObservableObject {
         return note
     }
 
+    /// The note a Quick note opens: the newest one while it is still blank (clicking again doesn't pile up empty
+    /// notes), otherwise a new one.
+    public func quickNote() -> ScratchNote {
+        if let newest = sorted.first, newest.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return newest }
+        return create()
+    }
+
     public func update(_ id: UUID, text: String) {
         guard var note = notes.first(where: { $0.id == id }), note.text != text else { return }
         note.text = text

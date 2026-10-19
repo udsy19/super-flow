@@ -532,16 +532,9 @@ final class FlowBarCanvas: NSView {
                     let icon = CGRect(x: rect.midX - 7, y: rect.midY - 7, width: 14, height: 14)
                     switch picker {
                     case .hub: FlowBarGlyphs.brandMark(in: icon.insetBy(dx: 0, dy: 1), color: .white)
-                    case .notes: FlowBarGlyphs.record(in: icon, color: .white)
+                    case .quickNote: FlowBarGlyphs.symbol("square.and.pencil", in: icon, color: .white, pointSize: 13)
                     case .sounds:
                         FlowBarGlyphs.symbol(scene.soundsOn ? "speaker.wave.2.fill" : "speaker.slash.fill", in: icon, color: .white, pointSize: 13)
-                    case .language:
-                        if let code = scene.languageCode {
-                            drawLine(NSAttributedString(string: code.uppercased(), attributes: [.font: FlowBarStyle.languageCode, .foregroundColor: NSColor.white]),
-                                     in: rect, centred: true)
-                        } else {
-                            FlowBarGlyphs.symbol("globe", in: icon, color: .white, pointSize: 13)
-                        }
                     }
                 }
             }

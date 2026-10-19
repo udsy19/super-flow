@@ -8,6 +8,7 @@ func registerFlowBarKitTests() {
     SelfTest.cases.append(("FlowBarKit.meetingLayer", { flowBarMeetingLayer() }))
     SelfTest.cases.append(("FlowBarKit.cards", { flowBarCards() }))
     SelfTest.cases.append(("FlowBarKit.layout", { MainActor.assumeIsolated { flowBarLayout() } }))
+    SelfTest.cases.append(("FlowBarKit.placement", { flowBarPlacement() }))
     SelfTest.cases.append(("FlowBarKit.motion", { flowBarMotion() }))
     SelfTest.cases.append(("FlowBarKit.controller", { MainActor.assumeIsolated { flowBarController() } }))
     SelfTest.cases.append(("FlowBarKit.renders", { MainActor.assumeIsolated { flowBarRenders() } }))
@@ -23,8 +24,9 @@ private func flowBarStateMachine() {
     check(m.scene(at: t0).pill == .resting, "resting bar")
     m.pointerInside = true
     check(m.scene(at: t0).pill == .ready && m.scene(at: t0).showsPickers, "hover turns the resting bar into the ready pill with pickers")
-    m.hovered = .picker(.notes)
-    check(m.scene(at: t0).tooltip == [FlowBarCopy.Run("Take notes")], "picker tooltip")
+    m.hovered = .picker(.quickNote)
+    check(m.scene(at: t0).tooltip == [FlowBarCopy.Run("Quick note")], "picker tooltip")
+    check(FlowBarPicker.allCases == [.hub, .quickNote, .sounds], "no language or Notetaker circle on the bar")
     m.hovered = .cancel
     check(m.scene(at: t0).hovered == nil, "hover on something not showing is ignored")
     m.pointerInside = false
@@ -172,11 +174,12 @@ private func flowBarCards() {
 
     // Pickers: 8 from the pill, 2 apart, 30 pt circles, and the pill does not move.
     let ready = frames(.ready)
-    if let language = ready.pickers[.language], let hub = ready.pickers[.hub], let notes = ready.pickers[.notes], let sounds = ready.pickers[.sounds] {
-        check(language.maxX == ready.pill.minX - 8 && hub.maxX == language.minX - 2 && notes.minX == ready.pill.maxX + 8
-              && sounds.minX == notes.maxX + 2, "picker spacing")
-        check([language, hub, notes, sounds].allSatisfy { $0.size == CGSize(width: 30, height: 30) && $0.midY == ready.pill.midY }, "picker size")
-    } else { check(false, "four pickers on hover") }
+    if let hub = ready.pickers[.hub], let quickNote = ready.pickers[.quickNote], let sounds = ready.pickers[.sounds] {
+        check(hub.maxX == ready.pill.minX - 8 && quickNote.minX == ready.pill.maxX + 8 && sounds.minX == quickNote.maxX + 2, "picker spacing")
+        check([hub, quickNote, sounds].allSatisfy { $0.size == CGSize(width: 30, height: 30) && $0.midY == ready.pill.midY }, "picker size")
+        check(ready.pickers.count == 3, "three circles on hover")
+        check(ready.element(at: CGPoint(x: quickNote.midX, y: quickNote.midY), in: scene(.ready)) == .picker(.quickNote), "hit-test Quick note")
+    } else { check(false, "hub, Quick note and sounds on hover") }
     check(frames(.resting).pill.midX == ready.pill.midX && frames(.resting).pickers.isEmpty, "pickers only when ready; pill stays centred")
 
     // Side edges: transposed, 6 in from the edge.
@@ -233,9 +236,85 @@ private func flowBarCards() {
 
     // The window (§2.2).
     let usable = CGRect(x: 0, y: 80, width: 1512, height: 900)
-    check(FlowBarLayout.windowFrame(edge: .bottom, visibleFrame: usable) == CGRect(x: 500, y: 80, width: 512, height: 614), "bottom window")
-    check(FlowBarLayout.windowFrame(edge: .left, visibleFrame: usable) == CGRect(x: 0, y: 80, width: 490, height: 900), "left window")
-    check(FlowBarLayout.windowFrame(edge: .right, visibleFrame: CGRect(x: 0, y: 0, width: 3000, height: 2000)).height == 1144, "side window caps at 1144")
+    check(FlowBarLayout.windowFrame(edge: .bottom, usableArea: usable) == CGRect(x: 500, y: 80, width: 512, height: 614), "bottom window")
+    check(FlowBarLayout.windowFrame(edge: .left, usableArea: usable) == CGRect(x: 0, y: 80, width: 490, height: 900), "left window")
+    check(FlowBarLayout.windowFrame(edge: .right, usableArea: CGRect(x: 0, y: 0, width: 3000, height: 2000)).height == 1144, "side window caps at 1144")
+}
+
+private func scene(_ pill: FlowBarScene.Pill) -> FlowBarScene {
+    var s = FlowBarScene()
+    s.pill = pill
+    return s
+}
+
+/// Where the window goes (§2.2, `FlowBarPlacement`): above the Dock while it shows, at the bottom edge without one.
+private func flowBarPlacement() {
+    // A 14-inch display: 1512 × 982, a 33 pt menu bar (camera housing 32), the Dock along the bottom.
+    let frame = CGRect(x: 0, y: 0, width: 1512, height: 982)
+    func screen(dock bottom: CGFloat = 0, left: CGFloat = 0, right: CGFloat = 0, fullScreen: Bool = false, in f: CGRect = frame,
+                menu: CGFloat = 33) -> FlowBarScreen {
+        FlowBarScreen(frame: f, visibleFrame: CGRect(x: f.minX + left, y: f.minY + bottom, width: f.width - left - right,
+                                                     height: f.height - menu - bottom),
+                      fullScreenSpace: fullScreen)
+    }
+    func pillBottom(_ s: FlowBarScreen) -> CGFloat { FlowBarPlacement.windowFrame(edge: .bottom, on: s).minY + SFMetrics.FlowBar.bottomInset }
+
+    // Desktop: the pill sits 14 pt above the Dock, whatever its size (magnification pops icons over it, the
+    // reserved height stays the Dock's resting size).
+    for dock: CGFloat in [27, 74, 136] {
+        check(pillBottom(screen(dock: dock)) == dock + 14, "\(Int(dock)) pt Dock: the pill clears it by 14 pt")
+    }
+    check(FlowBarPlacement.windowFrame(edge: .bottom, on: screen(dock: 74)) == CGRect(x: 500, y: 74, width: 512, height: 614),
+          "bottom window above the Dock, centred")
+    // The Dock on a side: the bottom edge of the screen, centred in the space beside the Dock.
+    check(FlowBarPlacement.windowFrame(edge: .bottom, on: screen(left: 64)) == CGRect(x: 64 + (1448 - 512) / 2, y: 0, width: 512, height: 614),
+          "left Dock: bottom of the screen, centred beside the Dock")
+    check(FlowBarPlacement.windowFrame(edge: .bottom, on: screen(right: 64)).minY == 0
+          && FlowBarPlacement.windowFrame(edge: .bottom, on: screen(right: 64)).midX == (1448 / 2).rounded(), "right Dock")
+    check(FlowBarPlacement.windowFrame(edge: .left, on: screen(left: 64)).minX == 64, "left edge stays clear of a left Dock")
+    // Auto-hide: only the trigger strip is reserved, so the bar drops to the bottom edge.
+    check(pillBottom(screen(dock: 4)) == 14, "hidden Dock: 14 pt above the screen's bottom edge")
+    check(FlowBarPlacement.usableArea(screen(left: 4)) == CGRect(x: 0, y: 0, width: 1512, height: 949), "hidden side Dock: the strip comes back")
+    // A full-screen space: no Dock, so the bar sits at the bottom edge and centres on the whole screen.
+    check(FlowBarPlacement.windowFrame(edge: .bottom, on: screen(dock: 74, fullScreen: true)) == CGRect(x: 500, y: 0, width: 512, height: 614),
+          "full screen: bottom of the screen")
+    check(FlowBarPlacement.windowFrame(edge: .bottom, on: screen(left: 64, fullScreen: true)).midX == 756, "full screen with a side Dock: centred")
+    check(FlowBarPlacement.usableArea(screen(dock: 74, fullScreen: true)).maxY == 949, "the menu bar's inset stays")
+    let side = FlowBarPlacement.windowFrame(edge: .right, on: screen(dock: 74, fullScreen: true))
+    check(side.maxX == 1512 && side.minY == 0 && side.height == 949, "right edge in full screen: the whole height below the menu bar")
+    // A second display to the right, lower, with its own menu bar and the Dock moved onto it.
+    let second = CGRect(x: 1512, y: -200, width: 1920, height: 1080)
+    check(FlowBarPlacement.windowFrame(edge: .bottom, on: screen(in: second, menu: 25)) == CGRect(x: 1512 + 704, y: -200, width: 512, height: 614),
+          "second display without the Dock: its bottom edge")
+    check(pillBottom(screen(dock: 60, in: second, menu: 25)) == -200 + 60 + 14, "second display with the Dock: above it")
+
+    // Full-screen spaces from window bounds (Cocoa coordinates).
+    let visible = screen(dock: 74).visibleFrame
+    func full(_ windows: [CGRect], _ f: CGRect = frame, _ v: CGRect? = nil) -> Bool {
+        FlowBarPlacement.isFullScreenSpace(windows: windows, frame: f, visibleFrame: v ?? visible)
+    }
+    check(full([CGRect(x: 0, y: 0, width: 1512, height: 950)]), "a full-screen window below the camera housing")
+    check(full([frame]), "a full-screen window over the whole display")
+    check(full([CGRect(x: 0, y: 0, width: 755, height: 950), CGRect(x: 757, y: 0, width: 755, height: 950)]), "Split View")
+    check(!full([CGRect(x: 0, y: 74, width: 1512, height: 875)]), "a zoomed window stops at the Dock")
+    check(!full([CGRect(x: 0, y: 90, width: 749, height: 859), CGRect(x: 747, y: 74, width: 765, height: 875)]), "windows side by side on the desktop")
+    check(!full([CGRect(x: 200, y: 0, width: 900, height: 950)]), "a window dragged over the Dock isn't a full-screen space")
+    check(!full([CGRect(x: 0, y: 0, width: 1512, height: 400)]), "nor is a short one")
+    check(!full([CGRect(x: 1512, y: -200, width: 1920, height: 1080)]), "a full-screen window on another display")
+    check(!full([CGRect(x: 0, y: 0, width: 700, height: 950), CGRect(x: 1512, y: 0, width: 1512, height: 982)]),
+          "a window on the next display doesn't complete this one")
+    check(!full([]), "no windows")
+    check(full([second], second, screen(in: second, menu: 25).visibleFrame), "full screen on the second display")
+    // Stage Manager keeps windows inside the usable area: never a full-screen space.
+    check(!full([CGRect(x: 180, y: 120, width: 1100, height: 780), CGRect(x: 12, y: 300, width: 120, height: 90)]), "Stage Manager")
+
+    // Moves on one display glide; another display jumps.
+    let above = FlowBarPlacement.windowFrame(edge: .bottom, on: screen(dock: 74))
+    let bottom = FlowBarPlacement.windowFrame(edge: .bottom, on: screen(dock: 74, fullScreen: true))
+    check(FlowBarPlacement.animatesMove(from: above, to: bottom) && FlowBarPlacement.animatesMove(from: bottom, to: above), "Dock in and out glides")
+    check(!FlowBarPlacement.animatesMove(from: above, to: FlowBarPlacement.windowFrame(edge: .bottom, on: screen(in: second, menu: 25))),
+          "another display jumps")
+    check(!FlowBarPlacement.animatesMove(from: above, to: FlowBarPlacement.windowFrame(edge: .left, on: screen(dock: 74))), "another edge jumps")
 }
 
 private func scene(stacked: Bool) -> FlowBarScene {
@@ -332,11 +411,6 @@ private extension Array where Element == Double {
     check(bar.model.edge == .left, "edge")
     bar.pointer(inside: true, over: .pill)
     check(bar.model.scene(at: clock).pill == .ready, "hover readies the bar")
-
-    Defaults[.autoDetectLanguage] = true
-    check(FlowBar(showsPanel: false).model.languageCode == nil, "auto-detect shows the globe")
-    Defaults.reset(.autoDetectLanguage)
-    check(FlowBar(showsPanel: false).model.languageCode == Defaults[.selectedLanguages].first, "language code")
 }
 
 @MainActor private func flowBarRenders() {

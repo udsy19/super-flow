@@ -32,11 +32,18 @@ All notable changes to Super Flow are recorded here. The format follows Keep a C
   as "Nemotron (English, fastest, live text)". It recognises while the key is held, shows live text, and has the final
   text about 20 ms after key-up; English only, so other languages and meetings stay on Parakeet. The NVIDIA Open Model
   License ships with the app. On macOS 26, Apple's on-device SpeechAnalyzer is a zero-download choice for one language.
+- Quick note on the Flow Bar: hover the bar and click the note button to open Notes with a blank note ready for
+  dictation (a second click reuses it while it is still empty). The bar's hover buttons are now Open Super Flow,
+  Quick note and sounds: the dictation language is chosen in Settings, and the Notetaker starts from its shortcut or
+  the hub.
 - A "Cleanup model" choice on Macs with 24 GB or more: Qwen3.5 2B (the default) or Qwen3.5 4B (best quality).
 - The cleanup evaluation set (`docs/specs/cleanup-eval.jsonl`, 222 dictations) runs in the self-test: the rules alone
   must keep 207 passes, and with the dev model the rules and Qwen3.5-2B must pass 90% (they pass 93.7%).
 
 ### Fixed
+- The Flow Bar follows the Dock: it sits 14 pt above the Dock at any size, at the bottom edge of the screen when the
+  Dock is on a side or hidden, and drops to the bottom edge in a full-screen app (Split View included), gliding
+  between the two as the space, the app in front, the displays or the Dock's settings change.
 - The store never crashes the launch or sets data aside without need: a damaged database, or one whose schema can't be
   migrated, goes to Backup and every row that can still be read is copied into the fresh store; a database that is
   merely busy, read-only or on a full disk is left untouched and the session runs in memory, with a card saying so.

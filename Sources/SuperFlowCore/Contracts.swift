@@ -494,6 +494,9 @@ public protocol HubPresenting: AnyObject {
     func showMeeting(_ id: UUID)
     /// The Notepad window for a meeting being recorded (§20.6).
     func showNotepad(for meetingID: UUID)
+    /// The Flow Bar's Quick note (§11.4): Notes with a fresh note in front and its editor focused, so the next
+    /// dictation lands in it.
+    func showQuickNote()
     var isVisible: Bool { get }
 }
 

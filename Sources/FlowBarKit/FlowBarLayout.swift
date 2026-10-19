@@ -7,7 +7,6 @@ public enum FlowBarStyle {
     static let label = NSFont.systemFont(ofSize: 12, weight: .semibold)
     static let labelRegular = NSFont.systemFont(ofSize: 12, weight: .regular)
     static let timer = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
-    static let languageCode = NSFont.systemFont(ofSize: 10, weight: .semibold)
     static let tooltip = SFFont.text(.sm)
     static let tooltipBold = SFFont.text(.sm, weight: .bold)
     static let cardTitle = SFFont.text(.sm, weight: .semibold)
@@ -254,9 +253,9 @@ public enum FlowBarLayout {
 
     // MARK: Window
 
-    /// The window's frame for a dock edge inside the usable area (§2.2): 512 × 614 centred on the bottom edge, or
-    /// 490 × min(1144, height) flush to a side, vertically centred.
-    public static func windowFrame(edge: FlowBarEdge, visibleFrame vf: CGRect) -> CGRect {
+    /// The window's frame for a dock edge inside the usable area (§2.2, `FlowBarPlacement.usableArea`): 512 × 614
+    /// centred on the bottom edge, or 490 × min(1144, height) flush to a side, vertically centred.
+    public static func windowFrame(edge: FlowBarEdge, usableArea vf: CGRect) -> CGRect {
         switch edge {
         case .bottom:
             let size = M.bottomWindowSize

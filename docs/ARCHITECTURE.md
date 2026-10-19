@@ -32,9 +32,10 @@ Sources/
   InsertionKit/       CGEventTap hotkeys (Fn hold / double-tap / chords / triple-tap, secure input, stale
                       keys), AX context reader + app classifier, paste-and-restore or AX insertion,
                       verification, edit observation for auto-learn
-  FlowBarKit/         the Flow Bar NSPanel: states, waveform, hands-free buttons, meeting chrome, pickers,
-                      tooltips, notification cards, meeting-detected prompt, calendar reminder pill,
-                      drag-to-edge, "Getting ready… N%" state
+  FlowBarKit/         the Flow Bar NSPanel: states, waveform, hands-free buttons, meeting chrome, pickers
+                      (hub, Quick note, sounds), tooltips, notification cards, meeting-detected prompt, calendar
+                      reminder pill, drag-to-edge, placement above the Dock or at the bottom edge in full screen,
+                      "Getting ready… N%" state
   HubKit/             hub window: Home/History, Dictionary, Snippets, Style, Transforms, Scratchpad,
                       Notetaker library + meeting detail + Notepad, My Tasks, Insights, Settings panes,
                       onboarding, permission screens, open at login

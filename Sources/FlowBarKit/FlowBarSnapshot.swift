@@ -114,7 +114,6 @@ public enum FlowBarSnapshot {
                  _ build: (inout FlowBarModel) -> Void) {
             var model = FlowBarModel()
             model.edge = edge
-            model.languageCode = "en"
             build(&model)
             cases.append(Case(name: name, scene: model.scene(at: origin.addingTimeInterval(seconds)), level: level, time: seconds))
         }
@@ -122,11 +121,9 @@ public enum FlowBarSnapshot {
 
         add("01-resting") { $0.setState(.resting, now: t0) }
         add("02-ready-hover") { $0.setState(.resting, now: t0); $0.pointerInside = true; $0.hovered = .pill }
-        add("03-ready-language") { $0.setState(.resting, now: t0); $0.pointerInside = true; $0.hovered = .picker(.language) }
-        add("04-ready-notes") { $0.setState(.resting, now: t0); $0.pointerInside = true; $0.hovered = .picker(.notes) }
-        add("05-ready-hub-auto-language") {
-            $0.setState(.resting, now: t0); $0.pointerInside = true; $0.languageCode = nil; $0.soundsOn = false; $0.hovered = .picker(.hub)
-        }
+        add("03-ready-quick-note") { $0.setState(.resting, now: t0); $0.pointerInside = true; $0.hovered = .picker(.quickNote) }
+        add("04-ready-sounds-off") { $0.setState(.resting, now: t0); $0.pointerInside = true; $0.soundsOn = false; $0.hovered = .picker(.sounds) }
+        add("05-ready-hub") { $0.setState(.resting, now: t0); $0.pointerInside = true; $0.hovered = .picker(.hub) }
         add("06-initializing") { $0.setState(.initializing, now: t0) }
         add("07-push-to-talk-silent") { $0.setState(.listening(mode: .pushToTalk), now: t0) }
         add("08-push-to-talk-speaking", level: 0.9, after: 2.3) { $0.setState(.listening(mode: .pushToTalk), now: t0) }

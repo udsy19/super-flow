@@ -18,7 +18,7 @@ public enum FlowBarCopy {
     public static let cancel = "Cancel"
     public static let finish = "Finish and paste"
     public static let openHub = "Open Super Flow"
-    public static let takeNotes = "Take notes"
+    public static let quickNote = "Quick note"
     public static let muteSounds = "Mute sounds"
     public static let unmuteSounds = "Turn sounds on"
     public static let stopNotetaker = "Stop Notetaker"
@@ -26,12 +26,6 @@ public enum FlowBarCopy {
     public static let meetingReconnecting = "Still recording · Reconnecting…"
     public static let meetingWrappingUp = "Wrapping up…"
     public static let preparingTooltip = "Downloading the speech model. This happens once."
-
-    public static func language(code: String?) -> String {
-        guard let code else { return "Language: detect automatically" }
-        let name = Locale.current.localizedString(forLanguageCode: code) ?? code.uppercased()
-        return "Language: \(name)"
-    }
 
     public static func words(_ count: Int) -> String {
         let number = NumberFormatter.localizedString(from: NSNumber(value: count), number: .decimal)

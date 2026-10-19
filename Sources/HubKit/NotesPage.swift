@@ -5,7 +5,10 @@ import SuperFlowCore
 /// Notes (behaviour.md §11.4): a list of quick notes and an editor you can dictate into.
 struct NotesPage: View {
     @EnvironmentObject private var notes: NotesStore
+    @EnvironmentObject private var state: HubState
     @State private var selection: UUID?
+    /// The note whose editor takes the keyboard once it shows (a Quick note).
+    @State private var focusNoteID: UUID?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -25,7 +28,7 @@ struct NotesPage: View {
                 HStack(alignment: .top, spacing: 16) {
                     NoteList(selection: $selection).frame(width: 280)
                     if let id = selection ?? notes.sorted.first?.id, let note = notes.notes.first(where: { $0.id == id }) {
-                        NoteEditor(note: note) {
+                        NoteEditor(note: note, focusNoteID: $focusNoteID) {
                             notes.delete(note.id)
                             selection = notes.sorted.first?.id
                         }
@@ -40,6 +43,15 @@ struct NotesPage: View {
         .padding(.top, SFMetrics.Hub.pagePadding.top)
         .padding(.bottom, 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .onAppear(perform: openQuickNote)
+        .onChange(of: state.quickNoteID) { _, _ in openQuickNote() }
+    }
+
+    private func openQuickNote() {
+        guard let id = state.quickNoteID else { return }
+        state.quickNoteID = nil
+        selection = id
+        focusNoteID = id
     }
 }
 
@@ -75,8 +87,10 @@ struct NoteList: View {
 struct NoteEditor: View {
     @EnvironmentObject private var notes: NotesStore
     let note: ScratchNote
+    @Binding var focusNoteID: UUID?
     let onDelete: () -> Void
     @State private var text = ""
+    @FocusState private var editing: Bool
     @StateObject private var saver = DebouncedSave(delay: 0.4)
 
     var body: some View {
@@ -97,6 +111,7 @@ struct NoteEditor: View {
                         .padding(.horizontal, 21).padding(.vertical, 16).allowsHitTesting(false)
                 }
                 TextEditor(text: $text)
+                    .focused($editing)
                     .hubBody()
                     .scrollContentBackground(.hidden)
                     .padding(.horizontal, 16)
@@ -105,7 +120,11 @@ struct NoteEditor: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .borderedBox()
-        .onAppear { text = note.text }
+        .onAppear {
+            text = note.text
+            takeFocusIfAsked()
+        }
+        .onChange(of: focusNoteID) { _, _ in takeFocusIfAsked() }
         .onChange(of: text) { _, new in
             let id = note.id
             saver.schedule { [notes] in notes.update(id, text: new) }
@@ -114,6 +133,15 @@ struct NoteEditor: View {
             saver.flush()
             notes.update(note.id, text: text)
         }
+    }
+}
+
+extension NoteEditor {
+    /// Focuses the editor when its note is the one asked for, once the window has made it to the front.
+    private func takeFocusIfAsked() {
+        guard focusNoteID == note.id else { return }
+        focusNoteID = nil
+        DispatchQueue.main.async { editing = true }
     }
 }
 

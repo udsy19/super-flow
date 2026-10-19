@@ -222,6 +222,7 @@ private func endToEndAutoLearn() {
     func showSettings(_ pane: SettingsPane) {}
     func showMeeting(_ id: UUID) {}
     func showNotepad(for meetingID: UUID) {}
+    func showQuickNote() {}
     var isVisible: Bool { false }
 }
 

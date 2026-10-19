@@ -192,6 +192,11 @@ func registerHubKitTests() {
     let memory = NotesStore(history: nil)
     memory.update(memory.create().id, text: "Offline")
     check(memory.sorted.first?.title == "Offline", "without a store the notes live in memory")
+    let quick = memory.quickNote()
+    check(quick.text.isEmpty && memory.notes.count == 2, "Quick note starts a blank note")
+    check(memory.quickNote().id == quick.id && memory.notes.count == 2, "a second Quick note reuses the blank one")
+    memory.update(quick.id, text: "Call Sam")
+    check(memory.quickNote().id != quick.id && memory.notes.count == 3, "once written in, Quick note starts another")
     check(ScratchNote(text: "  \n").title == "New note", "an empty note's title")
 }
 

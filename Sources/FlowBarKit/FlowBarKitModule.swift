@@ -36,6 +36,8 @@ public final class FlowBar: FlowBarPresenting {
     private var holdTimer: Timer?
     private var holdingToTalk = false
     private var snoozeTimer: Timer?
+    /// Where `reposition` last sent the window (the panel's own frame is in between while it glides there).
+    private var placedFrame: CGRect?
 
     /// Pressing the ready pill this long starts push-to-talk until release; a shorter click starts hands-free.
     static let holdToTalkDelay: TimeInterval = 0.35
@@ -48,8 +50,7 @@ public final class FlowBar: FlowBarPresenting {
 
     /// Follows the settings and the microphone level.
     func connect() {
-        let keys: Set<String> = [Defaults.Keys.enableSounds.name, Defaults.Keys.selectedLanguages.name, Defaults.Keys.autoDetectLanguage.name,
-                                 Defaults.Keys.flowBarHiddenUntil.name, Defaults.Keys.shortcuts.name,
+        let keys: Set<String> = [Defaults.Keys.enableSounds.name, Defaults.Keys.flowBarHiddenUntil.name, Defaults.Keys.shortcuts.name,
                                  Defaults.Keys.hideMeetingRecorderInScreenShare.name]
         Defaults.changes
             .filter { keys.contains($0) }
@@ -64,10 +65,24 @@ public final class FlowBar: FlowBarPresenting {
         NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification)
             .sink { [weak self] _ in MainActor.assumeIsolated { self?.canvas?.reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion } }
             .store(in: &subscriptions)
+        // Where the bar sits changes with the space (full screen or not), the app in front, the displays and the
+        // Dock's settings; the 400 ms tick catches the rest (an auto-hidden Dock, a window entering full screen).
+        let workspace = NSWorkspace.shared.notificationCenter
+        Publishers.MergeMany(
+            workspace.publisher(for: NSWorkspace.activeSpaceDidChangeNotification),
+            workspace.publisher(for: NSWorkspace.didActivateApplicationNotification),
+            NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification),
+            DistributedNotificationCenter.default().publisher(for: FlowBar.dockPreferencesChanged)
+        )
+        .receive(on: DispatchQueue.main)
+        .sink { [weak self] _ in MainActor.assumeIsolated { self?.reposition() } }
+        .store(in: &subscriptions)
     }
 
+    /// Posted when the Dock's settings change (size, position, hiding).
+    static let dockPreferencesChanged = Notification.Name("com.apple.dock.prefchanged")
+
     private func readDefaults() {
-        model.languageCode = Defaults[.autoDetectLanguage] ? nil : Defaults[.selectedLanguages].first
         model.soundsOn = Defaults[.enableSounds]
         model.hiddenUntil = Date(timeIntervalSince1970: Defaults[.flowBarHiddenUntil])
         model.pushToTalkShortcut = Defaults[.shortcuts].chords(for: .pushToTalk).first?.displayString ?? "Fn"
@@ -245,13 +260,26 @@ public final class FlowBar: FlowBarPresenting {
         return more
     }
 
-    /// Follows the display under the cursor (§2.2) and the dock edge.
+    /// Follows the display under the cursor and, on it, the Dock: above it while it shows, at the bottom edge in a
+    /// full-screen space or with the Dock hidden (§2.2, `FlowBarPlacement`). A short move on the same display glides
+    /// at AppKit's own window-move pace; another display or edge, a hidden window or Reduce Motion jump.
     private func reposition(force: Bool = false) {
         guard let panel else { return }
-        let frame = FlowBarLayout.windowFrame(edge: model.edge, visibleFrame: NSScreen.active.visibleFrame)
-        guard force || frame != panel.frame else { return }
+        let frame = FlowBarPlacement.windowFrame(edge: model.edge, on: .current(NSScreen.active))
+        guard force || frame != placedFrame else { return }
+        let from = placedFrame ?? panel.frame
+        placedFrame = frame
         let sizeChanged = frame.size != panel.frame.size
-        panel.setFrame(frame, display: false)
+        if !force, panel.isVisible, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+           FlowBarPlacement.animatesMove(from: from, to: frame) {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = panel.animationResizeTime(frame)
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                panel.animator().setFrame(frame, display: false)
+            }
+        } else {
+            panel.setFrame(frame, display: false)
+        }
         if sizeChanged, let canvas { canvas.apply(model.scene(at: now()), animated: false) }
     }
 
@@ -341,9 +369,7 @@ public final class FlowBar: FlowBarPresenting {
         case .meetingBody:
             if case .recording(let id)? = Services.meetingRecorder?.state { Services.hub?.showNotepad(for: id) }
         case .picker(.hub): Services.hub?.show(.home)
-        case .picker(.language):
-            if let canvas, let rect = canvas.frames.pickers[.language] { languageMenu().popUp(positioning: nil, at: CGPoint(x: rect.minX, y: rect.maxY + 6), in: canvas) }
-        case .picker(.notes): Task { _ = try? await Services.meetingRecorder?.start(nil) }
+        case .picker(.quickNote): Services.hub?.showQuickNote()
         case .picker(.sounds): Defaults[.enableSounds].toggle()
         case .cardAction(let id, let index): performNotificationAction(id: id, index: index)
         case .cardClose(let id): dismiss(notificationID: id)

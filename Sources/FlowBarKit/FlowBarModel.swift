@@ -1,14 +1,16 @@
 import Foundation
 import SuperFlowCore
 
-/// The circles that appear beside the pill on hover (ui-reference.md §2.9).
+/// The circles that appear beside the pill on hover (ui-reference.md §2.9). The dictation language is set in
+/// Settings and the Notetaker starts from its shortcut or the hub, so neither has a circle here.
 public enum FlowBarPicker: String, CaseIterable, Sendable {
-    case hub, language, notes, sounds
+    case hub, quickNote, sounds
 
     /// Before the pill (bottom edge: left; side edges: above), outermost first.
-    public static let leading: [FlowBarPicker] = [.hub, .language]
-    /// After the pill (bottom edge: right; side edges: below), innermost first.
-    public static let trailing: [FlowBarPicker] = [.notes, .sounds]
+    public static let leading: [FlowBarPicker] = [.hub]
+    /// After the pill (bottom edge: right; side edges: below), innermost first: Quick note where the original keeps
+    /// its Scratchpad button, in the group after the pill.
+    public static let trailing: [FlowBarPicker] = [.quickNote, .sounds]
 }
 
 /// The meeting-detected prompt's three choices.
@@ -51,8 +53,6 @@ public struct FlowBarScene: Equatable, Sendable {
     public var commandMode = false
     public var edge: FlowBarEdge = .bottom
     public var hovered: FlowBarElement?
-    /// The dictation language shown on the language picker; nil when detecting automatically.
-    public var languageCode: String?
     public var soundsOn = true
     /// Shown in the dictate tooltip ("Click or hold Fn to dictate").
     public var pushToTalkShortcut = "Fn"
@@ -114,8 +114,7 @@ public struct FlowBarScene: Equatable, Sendable {
             case .stopping: return plain(FlowBarCopy.meetingWrappingUp)
             }
         case .picker(.hub): return plain(FlowBarCopy.openHub)
-        case .picker(.language): return plain(FlowBarCopy.language(code: languageCode))
-        case .picker(.notes): return plain(FlowBarCopy.takeNotes)
+        case .picker(.quickNote): return plain(FlowBarCopy.quickNote)
         case .picker(.sounds): return plain(soundsOn ? FlowBarCopy.muteSounds : FlowBarCopy.unmuteSounds)
         case .cardAction, .cardClose, .prompt: return nil
         }
@@ -143,7 +142,6 @@ public struct FlowBarModel: Equatable, Sendable {
     public var restingVisible = true
     /// "Hide for 1 hour" snooze.
     public var hiddenUntil: Date = .distantPast
-    public var languageCode: String?
     public var soundsOn = true
     public var pushToTalkShortcut = "Fn"
 
@@ -247,7 +245,6 @@ public struct FlowBarModel: Equatable, Sendable {
         var scene = FlowBarScene()
         scene.edge = edge
         scene.commandMode = commandMode
-        scene.languageCode = languageCode
         scene.soundsOn = soundsOn
         scene.pushToTalkShortcut = pushToTalkShortcut
         scene.notification = notification

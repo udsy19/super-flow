@@ -45,6 +45,18 @@ final class Hub: HubPresenting {
         present()
     }
 
+    /// The bar's Quick note: Notes, with a blank note in front and its editor taking the keyboard, so holding the
+    /// shortcut dictates straight into it.
+    func showQuickNote() {
+        if !Defaults[.isOnboardingCompleted] { Onboarding.shared.show(); return }
+        state.mode = .hub
+        state.settingsPane = nil
+        state.modal = nil
+        state.go(.notes)
+        state.quickNoteID = store.notes.quickNote().id
+        present()
+    }
+
     /// Shows onboarding in the hub window (forced light, §1.2).
     func presentOnboarding(from step: OnboardingStep, steps: [OnboardingStep]) {
         state.settingsPane = nil

@@ -237,6 +237,7 @@ private func meetingRMS(_ samples: ArraySlice<Float>) -> Float {
     func showSettings(_ pane: SettingsPane) {}
     func showMeeting(_ id: UUID) {}
     func showNotepad(for meetingID: UUID) { notepads.append(meetingID) }
+    func showQuickNote() {}
     var isVisible: Bool { false }
 }
 

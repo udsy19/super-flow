@@ -284,6 +284,11 @@ Details:
   - If they changed it moves the window. The move is animated when it is under 100 pt; otherwise it jumps.
   - Then it sends `status:monitorChanged`.
   - During a Dock-edge transition the window fades to opacity 0 and comes back after at most 600 ms.
+- **Dock visibility (1.6.1174)** [M module 58601][helper `DockWindowObserver`]:
+  - The native helper polls every **0.5 s** (100 ms leeway): `CGWindowListCopyWindowInfo(onScreenOnly | excludeDesktopElements)`, windows owned by "Dock", skipping the ⌘-Tab switcher (`AXProcessSwitcherList`, 0.2 s AX timeout). It sends `DockInfoUpdate {isVisible, x, y}` when that changes; the main process relayouts on a visibility change.
+  - Dock visible: the usable area is `workArea`. Dock not visible (a full-screen space): the Dock's strip (left, right, bottom) is added back; the menu-bar inset stays.
+  - The window's bottom edge is the usable area's bottom; the move is animated (AppKit's own window-move time) when it is under 100 pt on both axes.
+- **Rebuild** (`FlowBarPlacement`): the same rule per screen. `visibleFrame` while the Dock shows; the strip added back when the Dock is hidden (an inset of 8 pt or less) or the screen shows a full-screen space, detected from window bounds only (no Screen Recording): normal-level windows that each reach from the screen's bottom edge to the menu bar's line and together span its width (one app, or Split View). Re-evaluated every 400 ms and on space, front-app, display and `com.apple.dock.prefchanged` changes; short moves glide for `animationResizeTime`, Reduce Motion jumps. An auto-hidden Dock that slides in is not tracked (neither does the original).
 - **Pill offset from the bottom** [U, derived from UI §2.3]:
   - The pill's bottom edge sits **14 pt above the bottom of the usable area**: the hover area's 8 pt bottom margin plus the hot area's 6 pt padding.
   - It is centred horizontally.
@@ -406,10 +411,10 @@ Reference renders: `assets/videos/waveform.mp4` (730×300, 7.5 s) shows exactly 
 
 | Picker | Module | Rebuild |
 |---|---|---|
-| **Language** | `effectiveLanguagePicker` | keep: language code / auto |
+| Language | `effectiveLanguagePicker` (left group) | drop: set in Settings |
 | **Transform / polish wand** | `autoPolishPicker`. Expands to 54 wide with a caret tab 22 × 22; prompt code 10 pt Google Sans Code, weight 600. | keep if Transforms ship |
-| Scratchpad | `scratchpadContainer` | optional |
-| **Start meeting** ("Take notes") | `startMeetingContainer` | keep (UI §10.2) |
+| **Scratchpad** | `scratchpadContainer` (right group) | keep as "Quick note": opens Notes with a blank note focused |
+| Start meeting ("Take notes") | `startMeetingContainer` (right group) | drop from the bar: the Notetaker shortcut and the hub start meetings |
 | Fetch links, Instruct chat | — | drop |
 
 ### 2.10 Tooltips on the bar [C 31201][C 92709][J]
