@@ -374,7 +374,7 @@ public final class MeetingRecorder: MeetingRecording {
     public func retryTranscript(of id: UUID) async throws {
         try ensureIdle(id)
         let folder = SuperFlowPaths.meetingAudio.appendingPathComponent(id.uuidString)
-        guard AudioChannel.allCases.contains(where: { !MeetingAudioFiles.samples(folder: folder, channel: $0, fromSample: 0).isEmpty }) else {
+        guard AudioChannel.allCases.contains(where: { MeetingAudioFiles.hasAudio(folder: folder, channel: $0) }) else {
             throw MeetingRecorderError.noAudio
         }
         var failure: Error?
@@ -555,7 +555,8 @@ public final class MeetingRecorder: MeetingRecording {
 
     /// Transcribes recorded audio from disk: after a crash only what follows the last saved segment of each channel;
     /// with `whole`, everything (the result replaces the transcript unless the engine failed on more of it than before).
-    /// Returns the engine's error when it couldn't transcribe anything.
+    /// The audio streams from disk 30 s at a time, each utterance recognised as it closes. Returns the engine's error
+    /// when it couldn't transcribe anything.
     private func transcribeFromDisk(_ id: UUID, folder: URL, whole: Bool) async -> Error? {
         guard let meeting = Services.meetings.meeting(id) else { return nil }
         await Self.prepareSpeechEngine()
@@ -567,15 +568,20 @@ public final class MeetingRecorder: MeetingRecording {
         for channel in AudioChannel.allCases {
             let lastSaved = meeting.segments.filter { $0.channel == channel }.map(\.end).max() ?? 0
             let from = whole ? 0 : Int(lastSaved * Double(AudioClip.sampleRate))
-            let samples = await Task.detached(priority: .utility) { MeetingAudioFiles.samples(folder: folder, channel: channel, fromSample: from) }.value
+            guard let reader = MeetingAudioReader(folder: folder, channel: channel, fromSample: from) else { continue }
             var segmenter = SpeechSegmenter(startSample: from)
-            let utterances = segmenter.append(samples) + [segmenter.flush()].compactMap { $0 }
-            for utterance in utterances {
-                attempts += 1
-                switch await recognize(utterance, channel: channel, vocabulary: vocabulary) {
-                case .segment(let segment): added.append(segment)
-                case .noSpeech: break
-                case .failed(let error): failures.append(error)
+            var ended = false
+            while !ended {
+                let block = await Task.detached(priority: .utility) { reader.next() }.value
+                ended = block == nil
+                let utterances = block.map { segmenter.append($0) } ?? [segmenter.flush()].compactMap { $0 }
+                for utterance in utterances {
+                    attempts += 1
+                    switch await recognize(utterance, channel: channel, vocabulary: vocabulary) {
+                    case .segment(let segment): added.append(segment)
+                    case .noSpeech: break
+                    case .failed(let error): failures.append(error)
+                    }
                 }
             }
         }

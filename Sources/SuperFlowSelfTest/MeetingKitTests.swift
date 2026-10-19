@@ -375,6 +375,18 @@ private func meetingTemporaryFolder() -> URL {
     check(crashed.totalSamples == ramp.count, "a reopened writer continues after the existing chunks")
     try? crashed.append([Float](repeating: 0.25, count: 16_000))
     check(ChunkedTrackWriter.read(folder: folder, channel: .mic).count == 71 * 16_000, "unclosed chunk is readable")
+    // "Retry transcript" streams: blocks of at most 30 s, from any offset, with nothing lost or repeated.
+    func blocks(from start: Int) -> [[Float]] {
+        guard let reader = MeetingAudioReader(folder: folder, channel: .mic, fromSample: start) else { return [] }
+        var result: [[Float]] = []
+        while let block = reader.next() { result.append(block) }
+        return result
+    }
+    let streamed = blocks(from: 40 * 16_000)
+    check(streamed.allSatisfy { $0.count <= MeetingAudioReader.blockSamples } && streamed.joined().count == 31 * 16_000
+          && abs(streamed[0][0] - ramp[40 * 16_000]) < 1e-4, "chunks stream block by block from an offset (\(streamed.map(\.count)))")
+    check(MeetingAudioFiles.hasAudio(folder: folder, channel: .mic) && !MeetingAudioFiles.hasAudio(folder: folder, channel: .system),
+          "audio presence without reading it")
 
     switch Result(catching: { try MeetingAudioFiles.finalize(folder: folder, channel: .mic) }) {
     case .success(let track?):
@@ -385,6 +397,11 @@ private func meetingTemporaryFolder() -> URL {
         let decoded = (try? AudioClip.samples(of: url)) ?? []
         check(abs(decoded.count - 71 * 16_000) <= 2048, "AAC decodes to 71 s at 16 kHz (\(decoded.count) samples)")
         check((try? MeetingAudioFiles.finalize(folder: folder, channel: .mic))??.file == "mic.m4a", "finalizing again keeps the track")
+        let fromFile = blocks(from: 0)
+        check(fromFile.count >= 3 && fromFile.allSatisfy { $0.count <= MeetingAudioReader.blockSamples } && fromFile.joined().count == decoded.count,
+              "the final file streams in 30 s blocks too (\(fromFile.map(\.count)))")
+        check(blocks(from: 70 * 16_000).joined().count == decoded.count - 70 * 16_000 && MeetingAudioFiles.hasAudio(folder: folder, channel: .mic),
+              "and from an offset")
     default: check(false, "finalize produced a track")
     }
     check((try? MeetingAudioFiles.finalize(folder: folder, channel: .system)) == .some(nil), "a channel without audio has no track")

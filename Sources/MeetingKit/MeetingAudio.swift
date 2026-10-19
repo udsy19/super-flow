@@ -234,14 +234,21 @@ public enum MeetingAudioFiles {
             || ChunkedTrackWriter.chunks(in: folder, channel: channel).isEmpty
     }
 
-    /// The channel's samples from `fromSample` on, from its chunks while it is still recorded in chunks, else from its
-    /// final file (re-transcribing a finished meeting).
+    /// The channel's samples from `fromSample` on, all at once (the speaker split needs the whole track). Transcription
+    /// reads with `MeetingAudioReader` instead.
     public static func samples(folder: URL, channel: AudioChannel, fromSample: Int = 0) -> [Float] {
+        guard let reader = MeetingAudioReader(folder: folder, channel: channel, fromSample: fromSample) else { return [] }
+        var samples: [Float] = []
+        while let block = reader.next() { samples += block }
+        return samples
+    }
+
+    /// Whether the channel has any recorded audio, in chunks or in its final file, without reading it.
+    public static func hasAudio(folder: URL, channel: AudioChannel) -> Bool {
         if !isEncoded(folder: folder, channel: channel) {
-            return ChunkedTrackWriter.read(folder: folder, channel: channel, fromSample: fromSample)
+            return ChunkedTrackWriter.chunks(in: folder, channel: channel).contains { ChunkedTrackWriter.sampleCount(of: $0) > 0 }
         }
-        guard let all = try? AudioClip.samples(of: folder.appendingPathComponent(fileName(channel))), fromSample < all.count else { return [] }
-        return fromSample > 0 ? Array(all[fromSample...]) : all
+        return (existingTrack(folder: folder, channel: channel)?.duration ?? 0) > 0
     }
 
     /// Seconds recorded in the folder: the longest channel, in chunks or in its final file.
@@ -277,4 +284,57 @@ public enum MeetingAudioFiles {
     }
 
     private static func fileSize(_ url: URL) -> Int { (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0 }
+}
+
+/// A channel's recorded audio from `fromSample` on, block by block: from its chunks while it is still recorded in
+/// chunks, else from its final file. "Retry transcript" on a long meeting reads it this way, so the recording (an hour is
+/// 230 MB as samples) is never in memory whole. `next()` does blocking file reads: call it off the main actor.
+public final class MeetingAudioReader: @unchecked Sendable {
+    /// Samples per block (30 s, one chunk).
+    public static var blockSamples: Int { ChunkedTrackWriter.chunkSamples }
+
+    private var chunks: [URL] = []
+    private var skip = 0
+    private var file: AVAudioFile?
+    private var buffer: AVAudioPCMBuffer?
+
+    /// Nil when the channel's final file can't be read.
+    public init?(folder: URL, channel: AudioChannel, fromSample: Int = 0) {
+        if !MeetingAudioFiles.isEncoded(folder: folder, channel: channel) {
+            chunks = ChunkedTrackWriter.chunks(in: folder, channel: channel)
+            skip = fromSample
+            return
+        }
+        let url = folder.appendingPathComponent(MeetingAudioFiles.fileName(channel))
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        guard let file = try? AVAudioFile(forReading: url, commonFormat: .pcmFormatFloat32, interleaved: false),
+              file.processingFormat.sampleRate == Double(AudioClip.sampleRate), file.processingFormat.channelCount == 1,
+              let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 16_384) else { return nil }
+        file.framePosition = AVAudioFramePosition(min(Int64(fromSample), file.length))
+        self.file = file
+        self.buffer = buffer
+    }
+
+    /// The next block, or nil at the end.
+    public func next() -> [Float]? {
+        if let file, let buffer {
+            // Small reads to the end: one large `read(into:)` stops at the last whole packet and drops the tail.
+            var block: [Float] = []
+            while block.count < Self.blockSamples, file.framePosition < file.length {
+                guard (try? file.read(into: buffer, frameCount: min(buffer.frameCapacity, AVAudioFrameCount(Self.blockSamples - block.count)))) != nil,
+                      buffer.frameLength > 0, let channel = buffer.floatChannelData?[0] else { break }
+                block.append(contentsOf: UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength)))
+            }
+            return block.isEmpty ? nil : block
+        }
+        while !chunks.isEmpty {
+            let chunk = chunks.removeFirst()
+            let count = ChunkedTrackWriter.sampleCount(of: chunk)
+            if skip >= count { skip -= count; continue }
+            let samples = ChunkedTrackWriter.read(chunk, skipping: skip)
+            skip = 0
+            if !samples.isEmpty { return samples }
+        }
+        return nil
+    }
 }
