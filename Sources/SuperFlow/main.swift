@@ -9,15 +9,14 @@ import FlowBarKit
 import HubKit
 import MeetingKit
 import UpdateKit
+import DictationKit
 
 /// The app shell (behaviour.md §1, owner decisions): a regular Dock app with the hub window and the floating Flow
 /// Bar, no menu bar item. Everything else lives in the feature modules, reached through `Services`.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let dictation = DictationCoordinator()
-
     /// Installs the modules in dependency order (behaviour.md §22.2): the store first, then models and engines, the
-    /// text pipeline, insertion and hotkeys, meetings, the Flow Bar, the hub, updates.
+    /// text pipeline, insertion and hotkeys, meetings, the Flow Bar, the hub, updates, and the coordinator over them.
     func applicationWillFinishLaunching(_ notification: Notification) {
         FlowStoreModule.install()
         SpeechKitModule.install()
@@ -28,7 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         FlowBarKitModule.install()
         HubKitModule.install()
         UpdateKitModule.install()
-        Services.dictation = dictation
+        DictationKitModule.install()
         NSApp.mainMenu = MainMenu.make()
         NSApp.setActivationPolicy(Defaults[.hideAppInDock] ? .accessory : .regular)
     }
@@ -41,6 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         runRetention()
         Services.models.startAutomaticDownloads()
         do { try Services.hotkeys.start() } catch { Log.hotkeys.error("Hotkeys unavailable: \(error.localizedDescription, privacy: .public)") }
+        DictationCoordinator.shared.activate()
         if Defaults[.meetingDetection] == .notify { Services.meetingDetector.start() }
         Services.flowBar.setEdge(Defaults[.flowBarEdge])
         Services.flowBar.setState(Services.onboarding.isCompleted && !Defaults[.hideFlowBarPermanently] ? .resting : .hidden)

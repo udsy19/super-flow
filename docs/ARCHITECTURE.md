@@ -42,8 +42,11 @@ Sources/
                       action items, export, audio/transcript retention
   UpdateKit/          background updates from GitHub Releases: check, SHA-256 and code-signature
                       verification, staging next to the app, swap on quit or while idle
-  SuperFlow/          app target: launch sequence, module wiring, dictation coordinator (DictationControlling),
-                      main menu, superflow:// routing
+  DictationKit/       the dictation coordinator (DictationControlling): hotkey routing (Fn gestures, Fn+Space and
+                      Fn+Control quirks), the capture → recognition → cleanup → insertion → history pipeline,
+                      Command Mode, Transforms, the Notetaker shortcut, "Getting ready… N%", every failure as a
+                      card, auto-learn; a library so the self-test can drive it end to end
+  SuperFlow/          app target: launch sequence, module wiring, main menu, superflow:// routing
   SuperFlowSelfTest/  headless checks (`swift run SuperFlowSelfTest`), per module, plus native smoke tests
 ```
 
@@ -75,7 +78,8 @@ Sources/
 | HubKit | `hub: HubPresenting`, `onboarding: OnboardingPresenting` | behaviour §12–§15, §20.5–20.8; ui-reference §3–§6, §10.1, §10.4 | every store and service, read-only |
 | MeetingKit | `meetingDetector`, `meetingRecorder`, `summarizer` | behaviour §20; local-models §8 | `audio`, `speech`, `cleanup`, `meetings`, `flowBar`, `hub` |
 | UpdateKit | `updates: Updating` | behaviour §1.5 | `dictation`, `meetingRecorder` for the idle gate |
-| SuperFlow | `dictation: DictationControlling` | behaviour §1, §2, §7 | all of the above |
+| DictationKit | `dictation: DictationControlling` | behaviour §1, §2, §7, §9.4, §10 | all of the above |
+| SuperFlow | — | behaviour §1 | installs every module, then `DictationCoordinator.shared.activate()` |
 
 Each worker replaces the placeholder in `Sources/<Module>/<Module>Module.swift`, keeps `install()` registering the
 same services, adds `Sources/SuperFlowSelfTest/<Module>Tests.swift` with a `register<Module>Tests()` function wired in
@@ -86,27 +90,44 @@ same services, adds `Sources/SuperFlowSelfTest/<Module>Tests.swift` with a `regi
 `Sources/SuperFlow/main.swift`:
 
 1. `applicationWillFinishLaunching` installs modules in dependency order: FlowStore → SpeechKit → AudioKit →
-   CleanupKit → InsertionKit → MeetingKit → FlowBarKit → HubKit → UpdateKit, registers the dictation coordinator,
-   sets the main menu, and applies the Dock policy (`hideAppInDock`, off by default).
+   CleanupKit → InsertionKit → MeetingKit → FlowBarKit → HubKit → UpdateKit → DictationKit, sets the main menu, and
+   applies the Dock policy (`hideAppInDock`, off by default).
 2. `applicationDidFinishLaunching`: retention sweeps (dictation history by the local data policy, meeting audio past
-   30 days, transcripts past theirs), `Services.models.startAutomaticDownloads()`, hotkeys, meeting detection when
-   set to "Notify me", the Flow Bar in its resting state (hidden until onboarding completes), onboarding or the hub,
-   `Services.updates.start()`.
+   30 days, transcripts past theirs), `Services.models.startAutomaticDownloads()` (speech models first), hotkeys,
+   `DictationCoordinator.shared.activate()` (listens to hotkeys, warms the installed engines, follows model installs,
+   points out a 🌐-key setting that collides with Apple's dictation), meeting detection when set to "Notify me", the
+   Flow Bar in its resting state (hidden until onboarding completes), onboarding or the hub, `Services.updates.start()`.
 3. Reopening the app shows the hub. `superflow://open[/<page>]`, `start-hands-free`, `stop-hands-free` are parsed by
    `AppRoute`.
 
-## Dictation pipeline (to be built on these contracts)
+## Dictation pipeline (DictationKit)
 
 ```
-hotkeys (InsertionKit) ─► DictationCoordinator (SuperFlow)
-   key-down: audio.startMicrophone() · context.snapshot() · cleanup.warm(style, level, category) · flowBar.listening
-   while held: speech.transcribeIncrementally(VAD-closed segments) · flowBar.setLevel
-   key-up:    post-roll · final transcript · cleanup.clean(input, budget) · insertion.insert(text, actions)
-              · history.save(dictation) · insertion.observeEdits → dictionary (auto-learn)
-   model not ready: flowBar.preparing(fraction) from models.readiness(of:)
+hotkeys (InsertionKit) ─► HotkeyRouter (pure: event + state → intent) ─► DictationCoordinator
+   key-down: context.snapshot() (a password field refuses with a card) · status initializing · flowBar.initializing
+             audio.frames (subscribed first, so the 300 ms pre-roll arrives) · audio.startMicrophone() · muteOutput
+             cue dictationStart · status listening · flowBar.listening(mode) · cleanup.warm(style, level, category)
+   while held: 40 ms frames → speech.transcribeIncrementally(…, .dictation): partials → flowBar.showLiveText (hands-free)
+             no frame for 3 s → dismiss(noAudioDuringDictation); 19/20 min warning and stop
+   key-up:   150 ms post-roll · stop mic · cue dictationStop · status processing · final transcript
+             cleanup.clean(input, budget: 1.0 s short / 2.5 s long; per-app style, style detection, dictionary, snippets)
+             insertion.insert(text, actions) · history.save (+ audio .caf, snippet use counts)
+             flowBar.cleanupCompleted (2 s) · insertion.observeEdits(30 s) → AutoLearn → dictionary + card
+   Command Mode (Fn+Control, or Fn then Control): selectedText at start · instruction → cleanup.transform → replaceSelection
+   Transforms (⌥1–⌥3): selectedText → cleanup.transform(prompt) → replaceSelection or clipboard
+   model not ready: flowBar.preparing(fraction) from models.readiness(of:), capture starts when it installs
+   failures: DictationNotices maps AudioError / SpeechError / InsertionOutcome / TransformError to cards with a fix
 ```
 
-Meetings run the same engines through `MeetingKit` with `SpeechPriority.meeting`; dictation pre-empts.
+Fn gestures the event tap produces (InsertionKit) and how the router reads them: Fn then Space is a push-to-talk press
+followed by a hands-free press with no release, so the running session turns hands-free; stopping with Fn+Space is a
+push-to-talk press (finishes) followed by a hands-free press that lands on a busy session (ignored, and debounced for
+500 ms); Fn then Control turns the session into Command Mode; a key that completes no chord inside the first second
+dismisses with `other_shortcut`.
+
+Meetings run the same engines through `MeetingKit` with `SpeechPriority.meeting`; dictation pre-empts. The notes
+model is a second `LanguageModelRole` on `TextCleaning` (`generate(_:instruction:role:)`), loaded by `MeetingRecorder`
+when a meeting starts and shared with cleanup when both settings name the same GGUF.
 
 ## Native dependencies
 
@@ -123,12 +144,17 @@ Both xcframeworks are universal dynamic frameworks with `@rpath` install names a
 
 ## Data
 
-`~/Library/Application Support/Super Flow/`: `store.sqlite`, `Models/<kind>/…`, `Audio/Dictations/`,
-`Audio/Meetings/<id>/`, `Backup/`. Preferences in `com.udsy.superflow`. See `PRIVACY.md` for retention and the
+`~/Library/Application Support/Super Flow/`: `store.sqlite` (dictations, dictionary, snippets, transforms, notes,
+meetings, action items), `Models/<kind>/…`, `Audio/Dictations/<id>.caf`, `Audio/Meetings/<id>/`, `Backup/` (a damaged
+store, and the `notes.json` of pre-1.0 builds once imported). The Silero VAD ships inside the app
+(`Contents/Resources/Models/vad/`). Preferences in `com.udsy.superflow`. See `PRIVACY.md` for retention and the
 download hosts.
 
 ## Scripts
 
-`scripts/signing-setup.sh` (once), `scripts/build-app.sh` (`--debug`, `UNIVERSAL=1`), `scripts/make-dmg.sh`,
-`scripts/release.sh <version>`, `scripts/install.sh` (served at https://udsy19.github.io/super-flow/install.sh;
-`SUPERFLOW_INSTALL_DIR`, `SUPERFLOW_NO_OPEN`), `scripts/make-icon.swift`.
+`scripts/signing-setup.sh` (once), `scripts/build-app.sh` (`--debug`, `UNIVERSAL=1`; copies the frameworks, sounds
+and bundled models, signs, then runs static launch checks: the library-validation entitlement, rpaths, every `@rpath`
+dependency present in `Contents/Frameworks`, resources and usage descriptions — the app is never launched by the
+build), `scripts/make-dmg.sh`, `scripts/release.sh <version>`, `scripts/install.sh` (served at
+https://udsy19.github.io/super-flow/install.sh; `SUPERFLOW_INSTALL_DIR`, `SUPERFLOW_NO_OPEN`), `scripts/make-icon.swift`,
+`scripts/make-sounds.swift` (synthesises `Resources/Sounds/*.wav`).

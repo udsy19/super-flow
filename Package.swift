@@ -14,6 +14,7 @@ let modules = [
     "HubKit",        // the hub window: home/history, dictionary, snippets, style, notes, meetings library, settings, onboarding
     "MeetingKit",    // meeting detection, dual-track recording, live transcript, diarization, summary, library, export, retention
     "UpdateKit",     // background updates from GitHub Releases: check, verify, stage, swap on quit or when idle
+    "DictationKit",  // the dictation coordinator: hotkeys → capture → recognition → cleanup → insertion → history; Command Mode, Transforms
 ]
 
 let package = Package(
@@ -52,6 +53,7 @@ let package = Package(
         .target(name: "HubKit", dependencies: ["SuperFlowCore"], path: "Sources/HubKit"),
         .target(name: "MeetingKit", dependencies: ["SuperFlowCore"], path: "Sources/MeetingKit"),
         .target(name: "UpdateKit", dependencies: ["SuperFlowCore"], path: "Sources/UpdateKit"),
+        .target(name: "DictationKit", dependencies: ["SuperFlowCore"], path: "Sources/DictationKit"),
 
         .executableTarget(name: "SuperFlow", dependencies: ["SuperFlowCore"] + modules.map { .target(name: $0) },
                           path: "Sources/SuperFlow"),

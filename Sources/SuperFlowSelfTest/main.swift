@@ -2,6 +2,7 @@ import AppKit
 import SuperFlowCore
 
 // Headless logic checks (the Command Line Tools have no XCTest). Run: swift run SuperFlowSelfTest
+setvbuf(stdout, nil, _IOLBF, 0)   // results stay in order with the engines' stderr logs, and survive a crash
 var failures = 0
 func check(_ cond: @autoclosure () -> Bool, _ msg: String, file: String = #fileID, line: Int = #line) {
     if !cond() { failures += 1; print("✗ \(file):\(line) \(msg)") }
@@ -36,6 +37,7 @@ registerFlowBarKitTests()
 registerCleanupKitTests()
 registerMeetingKitTests()
 registerHubKitTests()
+registerEndToEndTests()
 registerNativeSmokeTests()
 
 for (name, run) in SelfTest.cases {
