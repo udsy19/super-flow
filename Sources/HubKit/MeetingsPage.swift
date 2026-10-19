@@ -513,9 +513,10 @@ struct BubbleShape: Shape {
 
 /// The user's own notes for the meeting, kept verbatim and saved as they type.
 struct MeetingNotesView: View {
+    @EnvironmentObject private var state: HubState
     let meeting: Meeting
     @State private var text = ""
-    @State private var save: Task<Void, Never>?
+    @StateObject private var saver = DebouncedSave(delay: 0.5)
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -526,21 +527,16 @@ struct MeetingNotesView: View {
             TextEditor(text: $text).hubBody().scrollContentBackground(.hidden).frame(minHeight: 320)
         }
         .onAppear { text = meeting.notes }
-        .onChange(of: text) { _, new in
-            save?.cancel()
-            save = Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(500))
-                guard !Task.isCancelled else { return }
-                persist(new)
-            }
-        }
-        .onDisappear { save?.cancel(); persist(text) }
+        .onChange(of: text) { _, new in saver.schedule { persist(new) } }
+        .onDisappear { saver.flush(); persist(text) }
     }
 
     private func persist(_ notes: String) {
         guard var fresh = Services.meetings?.meeting(meeting.id), fresh.notes != notes else { return }
         fresh.notes = notes
-        try? Services.meetings?.save(fresh)
+        do { try Services.meetings?.save(fresh) } catch {
+            state.showToast("Couldn't save your notes: \(error.localizedDescription)", isError: true)
+        }
     }
 }
 

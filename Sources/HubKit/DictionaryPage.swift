@@ -145,7 +145,9 @@ struct DictionaryRow: View {
     private func toggleStar() {
         var changed = entry
         changed.isStarred.toggle()
-        try? Services.history?.save(changed)
+        do { try Services.history?.save(changed) } catch {
+            state.showToast("“\(entry.display)” couldn't be updated.", isError: true)
+        }
     }
 
     private func delete() {

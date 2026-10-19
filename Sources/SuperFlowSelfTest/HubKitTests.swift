@@ -5,6 +5,21 @@ import SuperFlowCore
 import HubKit
 
 func registerHubKitTests() {
+    SelfTest.cases.append(("HubKit.editsSurviveQuit", { MainActor.assumeIsolated {
+        var saved: [String] = []
+        let saver = DebouncedSave(delay: 30)
+        saver.schedule { saved.append("first") }
+        saver.schedule { saved.append("latest") }
+        check(saved.isEmpty, "typing waits for a pause")
+        NotificationCenter.default.post(name: NSApplication.willTerminateNotification, object: NSApp)
+        check(saved == ["latest"], "quitting saves the last edit at once: \(saved)")
+        saver.flush()
+        check(saved == ["latest"], "and only once")
+        let quick = DebouncedSave(delay: 0.05)
+        quick.schedule { saved.append("paused") }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        check(saved.last == "paused", "a pause saves on its own")
+    } }))
     SelfTest.cases.append(("HubKit.meetingRetryOffers", { MainActor.assumeIsolated {
         let words = "We agreed to ship the beta on Friday and Priya sends the pricing proposal tomorrow morning before the review"
         let long = Meeting(title: "Sync", endedAt: Date(), tracks: [AudioTrack(channel: .mic, file: "mic.m4a")],

@@ -63,3 +63,5 @@ All notable changes to Super Flow are recorded here. The format follows Keep a C
   dropped clause the length check alone accepted) is rejected in favour of the rules text.
 - A speech model that is installed but won't load (a damaged file) no longer fails every dictation: the next installed
   model is tried, and a card says whether dictation is running on another model or can't start until it's fixed.
+- Notes and meeting notes typed just before quitting are saved: the pause-before-saving editors save at once when the
+  app quits. A meeting note or a dictionary star that can't be saved says so instead of failing silently.

@@ -77,7 +77,7 @@ struct NoteEditor: View {
     let note: ScratchNote
     let onDelete: () -> Void
     @State private var text = ""
-    @State private var save: Task<Void, Never>?
+    @StateObject private var saver = DebouncedSave(delay: 0.4)
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -107,15 +107,11 @@ struct NoteEditor: View {
         .borderedBox()
         .onAppear { text = note.text }
         .onChange(of: text) { _, new in
-            save?.cancel()
-            save = Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(400))
-                guard !Task.isCancelled else { return }
-                notes.update(note.id, text: new)
-            }
+            let id = note.id
+            saver.schedule { [notes] in notes.update(id, text: new) }
         }
         .onDisappear {
-            save?.cancel()
+            saver.flush()
             notes.update(note.id, text: text)
         }
     }
