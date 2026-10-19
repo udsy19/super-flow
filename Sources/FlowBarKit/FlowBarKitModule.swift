@@ -80,6 +80,11 @@ public final class FlowBar: FlowBarPresenting {
         refresh()
     }
 
+    public func setMeetingPhase(_ phase: MeetingBarPhase?) {
+        model.setMeetingPhase(phase, now: now())
+        refresh()
+    }
+
     public func setLevel(_ level: Float) {
         guard let canvas else { return }
         canvas.level.target = canvas.scene.showsLevel ? Double(min(max(level, 0), 1)) : 0
@@ -134,8 +139,7 @@ public final class FlowBar: FlowBarPresenting {
 
     // MARK: Answers (also driven by the self-test)
 
-    /// The prompt's choice; nil when it timed out. "Don't ask for this app" declines this meeting like "Not now" until
-    /// `MeetingPromptAnswer` has a case of its own for it.
+    /// The prompt's choice; nil when it timed out.
     public func answerPrompt(_ choice: FlowBarPromptChoice?) {
         guard model.prompt != nil else { return }
         let handler = promptAnswer
@@ -144,7 +148,8 @@ public final class FlowBar: FlowBarPresenting {
         refresh()
         switch choice {
         case .record?: handler?(.record)
-        case .notNow?, .neverForApp?: handler?(.notThisOne)
+        case .notNow?: handler?(.notThisOne)
+        case .neverForApp?: handler?(.neverForThisApp)
         case nil: handler?(.dismissed)
         }
     }

@@ -74,6 +74,8 @@ public protocol AudioCapturing: AnyObject {
     var frames: AsyncStream<AudioFrame> { get }
     /// The microphone level 0…1 for the Flow Bar waveform, batched every 150 ms.
     var level: AnyPublisher<Float, Never> { get }
+    /// The input devices whenever they come, go or change availability (the current list first).
+    var deviceChanges: AnyPublisher<[AudioDevice], Never> { get }
     /// Lowers the output volume while dictating when "Mute all audio while dictating" is on; restored by `unmuteOutput`.
     func muteOutput()
     func unmuteOutput()
@@ -222,11 +224,15 @@ public struct CleanupInput: Sendable {
     public var format: TranscriptionFormat
     public var dictionary: [DictionaryEntry]
     public var snippets: [Snippet]
+    /// Style detection (§8.4, `Defaults[.styleDetectionEnabled]`): when the text before the cursor is long enough to
+    /// show how the user writes there, that style replaces `style`.
+    public var detectStyle: Bool
 
     public init(transcript: Transcript, context: AppContext = AppContext(), style: WritingStyle = .formal, level: CleanupLevel = .light,
-                format: TranscriptionFormat = .aiFormatting, dictionary: [DictionaryEntry] = [], snippets: [Snippet] = []) {
+                format: TranscriptionFormat = .aiFormatting, dictionary: [DictionaryEntry] = [], snippets: [Snippet] = [],
+                detectStyle: Bool = false) {
         self.transcript = transcript; self.context = context; self.style = style; self.level = level; self.format = format
-        self.dictionary = dictionary; self.snippets = snippets
+        self.dictionary = dictionary; self.snippets = snippets; self.detectStyle = detectStyle
     }
 }
 
@@ -252,25 +258,73 @@ public struct CleanupOutput: Sendable {
     /// Set when the text is the rules-only result.
     public var skipReason: CleanupSkipReason?
     public var actions: [PostInsertAction]
+    /// Snippets whose trigger was spoken and expanded, for their use counts (§8.6).
+    public var expandedSnippets: [UUID]
     public var usedLLM: Bool { skipReason == nil }
 
-    public init(text: String, skipReason: CleanupSkipReason? = nil, actions: [PostInsertAction] = []) {
-        self.text = text; self.skipReason = skipReason; self.actions = actions
+    public init(text: String, skipReason: CleanupSkipReason? = nil, actions: [PostInsertAction] = [], expandedSnippets: [UUID] = []) {
+        self.text = text; self.skipReason = skipReason; self.actions = actions; self.expandedSnippets = expandedSnippets
+    }
+}
+
+/// Which local LLM a request runs on (local-models.md §9.2): the cleanup model (`Defaults[.cleanupModelID]`, Qwen3.5-2B
+/// by default) for dictation cleanup, Transforms and Command Mode; the notes model (`Defaults[.notesModelID]`,
+/// Qwen3.5-4B) for meeting notes. One engine serves both roles when both settings name the same model.
+public enum LanguageModelRole: String, Codable, CaseIterable, Sendable {
+    case cleanup, notes
+}
+
+/// Transform and Command Mode failures, worded as strings.md's `polish_*` notifications.
+public enum TransformError: LocalizedError, Equatable {
+    /// More than `DictationLimits.transformMaxWords` words selected.
+    case tooLong
+    case emptyResponse
+    case timedOut
+    /// The model for the role is not downloaded or not loaded yet.
+    case modelNotReady
+    case failed
+
+    public var errorDescription: String? {
+        switch self {
+        case .tooLong: "Oops, too long to polish"
+        case .emptyResponse: "Transform returned no text"
+        case .timedOut: "Transform timed out"
+        case .modelNotReady: "Just a moment - Super Flow is getting ready..."
+        case .failed: "Transform failed. Please try again."
+        }
+    }
+
+    public var recoverySuggestion: String? {
+        switch self {
+        case .tooLong: "Try again with under \(DictationLimits.transformMaxWords) words"
+        case .emptyResponse: "Something went wrong. Please try again."
+        case .timedOut: "The request took too long. Please try again."
+        case .modelNotReady, .failed: nil
+        }
     }
 }
 
 @MainActor
 public protocol TextCleaning: AnyObject {
-    /// Whether an LLM is loaded; cleanup still works (rules only) when false.
-    var isModelReady: Bool { get }
-    func prepare(modelID: String) async throws
-    func unload()
+    /// Whether the model for a role is loaded; cleanup still works (rules only) without the cleanup model.
+    func isModelReady(for role: LanguageModelRole) -> Bool
+    /// Loads and warms a GGUF for a role; the previous engine of that role stays until this one is ready.
+    func prepare(modelID: String, role: LanguageModelRole) async throws
+    func unload(role: LanguageModelRole)
     /// Prefills the per-app system prefix so the user turn is all that remains (call at key-down).
     func warm(style: WritingStyle, level: CleanupLevel, category: AppCategory) async
     /// Never throws: falls back to rules with a skip reason. `budget` is the LLM wall-time cap.
     func clean(_ input: CleanupInput, budget: TimeInterval) async -> CleanupOutput
-    /// Transforms (Polish and custom prompts) and Command Mode over selected text; throws on failure.
+    /// Transforms (Polish and custom prompts) and Command Mode over selected text on the cleanup model; throws on failure.
     func transform(_ text: String, instruction: String) async throws -> String
+    /// A free-form instruction over `input` on the model of `role` (MeetingKit's notes on the notes model); the reply
+    /// is returned as written, with no guardrails beyond the think-block strip. Throws `TransformError`.
+    func generate(_ input: String, instruction: String, role: LanguageModelRole) async throws -> String
+}
+
+public extension TextCleaning {
+    /// The cleanup model is loaded.
+    var isModelReady: Bool { isModelReady(for: .cleanup) }
 }
 
 // MARK: - Insertion and context (InsertionKit; behaviour.md §6, §9)
@@ -310,9 +364,19 @@ public protocol AppContextReading: AnyObject {
 
 // MARK: - Hotkeys (InsertionKit; behaviour.md §3)
 
+/// How the event tap was installed (§3.3, §15).
+public enum HotkeyTapMode: String, Sendable {
+    /// Accessibility granted: completed chords are swallowed before the frontmost app sees them.
+    case active
+    /// Input Monitoring only: shortcuts fire but every key still reaches the app.
+    case listenOnly = "listen-only"
+}
+
 @MainActor
 public protocol HotkeyMonitoring: AnyObject {
     var isRunning: Bool { get }
+    /// The tap installed right now; nil while no permission allows one.
+    var tapMode: HotkeyTapMode? { get }
     /// Starts the event tap (needs Accessibility); throws when it cannot be created.
     func start() throws
     func stop()
@@ -350,7 +414,10 @@ public enum FlowBarState: Equatable, Sendable {
 }
 
 public enum MeetingBarPhase: Equatable, Sendable {
-    case pending, recording(wordCount: Int), reconnecting, stopping
+    case pending
+    /// `startedAt` is the recording's start, so the bar's clock survives restarts and dictations in between.
+    case recording(wordCount: Int, startedAt: Date)
+    case reconnecting, stopping
 }
 
 /// A card shown above the bar (§18): in-app, never a macOS banner.
@@ -383,13 +450,20 @@ public struct MeetingPrompt: Equatable, Sendable {
 }
 
 public enum MeetingPromptAnswer: Equatable, Sendable {
-    case record, notThisOne, dismissed
+    case record, notThisOne
+    /// "Don't ask for this app": the prompt is never shown again for the meeting's app.
+    case neverForThisApp
+    case dismissed
 }
 
 @MainActor
 public protocol FlowBarPresenting: AnyObject {
     var state: FlowBarState { get }
+    /// Dictation states. `.meeting(…)` here is the same as `setMeetingPhase`; `.resting`/`.hidden` end a dictation and
+    /// bring the meeting chrome back when a meeting is recording.
     func setState(_ state: FlowBarState)
+    /// The Notetaker's layer under the dictation states (§10.2): a phase while a meeting records, nil when it ends.
+    func setMeetingPhase(_ phase: MeetingBarPhase?)
     /// Microphone level 0…1 for the waveform.
     func setLevel(_ level: Float)
     func setEdge(_ edge: FlowBarEdge)
@@ -405,7 +479,7 @@ public protocol FlowBarPresenting: AnyObject {
 // MARK: - Hub and onboarding (HubKit; behaviour.md §12–§14)
 
 public enum HubPage: String, Codable, CaseIterable, Sendable {
-    case home, notetaker, tasks, dictionary, snippets, style, transforms, scratchpad, insights, settings
+    case home, history, notetaker, tasks, dictionary, snippets, style, transforms, scratchpad, insights, settings
 }
 
 public enum SettingsPane: String, Codable, CaseIterable, Sendable {
@@ -483,6 +557,12 @@ public protocol MeetingRecording: AnyObject {
     func discard() async
     /// Final and partial segments as they arrive, for the live transcript.
     var liveSegments: AsyncStream<TranscriptSegment> { get }
+    /// Appends the user's text to the notes of the meeting being recorded (the Notepad, dictation into it).
+    func appendNote(_ text: String)
+    /// Marks the current moment of the recording (`Meeting.markers`): "Pricing", or an empty label for a plain bookmark.
+    func addMarker(_ label: String)
+    /// "Update everywhere" (§20.7.3): names a speaker in every block; the meeting's action items follow the new name.
+    func renameSpeaker(_ speakerID: UUID, to name: String, inMeeting id: UUID) throws
     /// Deletes audio past retention (`Defaults[.meetingAudioRetentionDays]`); returns the meetings pruned.
     @discardableResult func pruneAudio(now: Date) -> [UUID]
 }
@@ -501,7 +581,7 @@ public protocol MeetingSummarizing: AnyObject {
 // MARK: - Store (FlowStore; behaviour.md §11, §19)
 
 public enum StoreChange: Equatable, Sendable {
-    case dictations, dictionary, snippets, meetings, actionItems
+    case dictations, dictionary, snippets, notes, meetings, actionItems
     /// Erase, prune, reset: reload everything.
     case reloaded
 }
@@ -547,6 +627,11 @@ public protocol HistoryStoring: AnyObject {
     func save(_ transform: TransformPrompt) throws
     func deleteTransform(_ id: UUID) throws
 
+    /// The Notes page (§11.4), newest edit first.
+    var notes: [ScratchNote] { get }
+    func save(_ note: ScratchNote) throws
+    func deleteNote(_ id: UUID) throws
+
     var changes: AnyPublisher<StoreChange, Never> { get }
 }
 
@@ -567,6 +652,10 @@ public protocol MeetingStoring: AnyObject {
     var actionItems: [ActionItem] { get }
     func save(_ item: ActionItem) throws
     func deleteActionItem(_ id: UUID) throws
+
+    /// `.meetings`, `.actionItems` and `.reloaded` as rows change (the same feed as `HistoryStoring.changes` when one
+    /// store backs both).
+    var changes: AnyPublisher<StoreChange, Never> { get }
 }
 
 // MARK: - Dictation coordinator (SuperFlow app target; behaviour.md §2)

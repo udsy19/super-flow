@@ -20,6 +20,7 @@ public final class AudioCapture: AudioCapturing {
 
     private let hub = FrameHub()
     private let levelSubject = CurrentValueSubject<Float, Never>(0)
+    private let devicesSubject = CurrentValueSubject<[AudioDevice], Never>([])
     private let meter: MicLevelMeter
     private lazy var microphone = MicrophoneCapture { [hub, meter] frames in
         hub.publish(frames)
@@ -32,7 +33,7 @@ public final class AudioCapture: AudioCapturing {
     private var microphoneDeviceID: String?
     private var listeners: [(AudioObjectPropertyAddress, AudioObjectPropertyListenerBlock)] = []
 
-    public private(set) var devices: [AudioDevice] = []
+    public private(set) var devices: [AudioDevice] = [] { didSet { devicesSubject.send(devices) } }
     public private(set) var isCapturingMicrophone = false
     public private(set) var isCapturingSystemAudio = false
 
@@ -40,6 +41,7 @@ public final class AudioCapture: AudioCapturing {
         let subject = levelSubject
         meter = MicLevelMeter { level in DispatchQueue.main.async { subject.send(level) } }
         devices = InputDevices.current()
+        devicesSubject.send(devices)   // property observers are silent inside init
         observeDevices()
     }
 
@@ -53,6 +55,8 @@ public final class AudioCapture: AudioCapturing {
     public var frames: AsyncStream<AudioFrame> { hub.stream() }
 
     public var level: AnyPublisher<Float, Never> { levelSubject.eraseToAnyPublisher() }
+
+    public var deviceChanges: AnyPublisher<[AudioDevice], Never> { devicesSubject.eraseToAnyPublisher() }
 
     // MARK: Microphone
 

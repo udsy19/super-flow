@@ -8,7 +8,7 @@ import SuperFlowCore
 ///   ("chat gpt" → "ChatGPT", "Anais" → "Anaïs").
 /// - Snippet triggers become opaque placeholders (`⟦S1⟧`) before the LLM and are expanded verbatim at the very end.
 struct Vocabulary {
-    private struct Rule { var pattern: NSRegularExpression; var output: String }
+    private struct Rule { var pattern: NSRegularExpression; var output: String; var snippetID: UUID? = nil }
 
     private let replacements: [Rule]
     private let spellings: [Rule]
@@ -46,16 +46,18 @@ struct Vocabulary {
             let body = words.map { NSRegularExpression.escapedPattern(for: String($0)) }.joined(separator: #"[\s\p{P}]+"#)
             guard let pattern = try? NSRegularExpression(pattern: #"(?<![\p{L}\p{N}])"# + body + #"(?![\p{L}\p{N}])"#,
                                                          options: [.caseInsensitive]) else { return nil }
-            return Rule(pattern: pattern, output: snippet.expansion)
+            return Rule(pattern: pattern, output: snippet.expansion, snippetID: snippet.id)
         }.sorted { byLength($0.pattern.pattern, $1.pattern.pattern) }
     }
 
     // MARK: Snippets
 
-    /// Swaps each spoken trigger for a placeholder; returns the text and what each placeholder expands to.
-    func insertPlaceholders(_ text: String) -> (String, [String: String]) {
+    /// Swaps each spoken trigger for a placeholder; returns the text, what each placeholder expands to, and the
+    /// snippets used (each once, in order of first use).
+    func insertPlaceholders(_ text: String) -> (text: String, expansions: [String: String], snippets: [UUID]) {
         var text = text
         var expansions: [String: String] = [:]
+        var used: [UUID] = []
         for rule in snippets {
             let matches = rule.pattern.matches(in: text, range: NSRange(text.startIndex..., in: text))
             for match in matches.reversed() {
@@ -64,8 +66,9 @@ struct Vocabulary {
                 expansions[token] = rule.output
                 text.replaceSubrange(range, with: token)
             }
+            if !matches.isEmpty, let id = rule.snippetID, !used.contains(id) { used.append(id) }
         }
-        return (text, expansions)
+        return (text, expansions, used)
     }
 
     static func expand(_ text: String, _ expansions: [String: String]) -> String {

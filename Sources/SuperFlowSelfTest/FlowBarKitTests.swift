@@ -75,31 +75,35 @@ private func flowBarStateMachine() {
 
 private func flowBarMeetingLayer() {
     var m = FlowBarModel()
-    m.setState(.meeting(.pending), now: t0)
-    check(m.meetingStartedAt == nil, "the clock waits for the recording to start")
-    m.setState(.meeting(.recording(wordCount: 12)), now: t0.addingTimeInterval(2))
-    check(m.scene(at: t0.addingTimeInterval(754.9)).pill == .meeting(.recording(wordCount: 12), elapsed: 752), "meeting elapsed time")
-    m.setState(.meeting(.recording(wordCount: 40)), now: t0.addingTimeInterval(10))
-    check(m.meetingStartedAt == t0.addingTimeInterval(2), "word-count updates keep the start")
+    let started = t0.addingTimeInterval(2)
+    m.setMeetingPhase(.pending, now: t0)
+    check(m.meetingStartedAt == nil && m.state == .meeting(.pending), "the clock waits for the recording to start")
+    m.setMeetingPhase(.recording(wordCount: 12, startedAt: started), now: t0.addingTimeInterval(2))
+    check(m.scene(at: t0.addingTimeInterval(754.9)).pill == .meeting(.recording(wordCount: 12, startedAt: started), elapsed: 752), "meeting elapsed time")
+    m.setMeetingPhase(.recording(wordCount: 40, startedAt: started), now: t0.addingTimeInterval(10))
+    check(m.meetingStartedAt == started, "word-count updates keep the start")
 
     // Dictation wins over meeting chrome, which comes back when the dictation ends (§10.2).
     m.setState(.listening(mode: .handsFree), now: t0.addingTimeInterval(20))
     check(m.scene(at: t0.addingTimeInterval(21)).pill == .handsFree(elapsed: 1), "dictation state wins")
     m.setState(.processing, now: t0.addingTimeInterval(25))
     m.setState(.resting, now: t0.addingTimeInterval(26))
-    check(m.state == .meeting(.recording(wordCount: 40)), "the coordinator's resting brings the meeting back")
-    check(m.scene(at: t0.addingTimeInterval(62)).pill == .meeting(.recording(wordCount: 40), elapsed: 60), "same meeting clock")
-    m.setState(.meeting(.reconnecting), now: t0.addingTimeInterval(70))
+    check(m.state == .meeting(.recording(wordCount: 40, startedAt: started)), "the coordinator's resting brings the meeting back")
+    check(m.scene(at: t0.addingTimeInterval(62)).pill == .meeting(.recording(wordCount: 40, startedAt: started), elapsed: 60), "same meeting clock")
+    m.setMeetingPhase(.reconnecting, now: t0.addingTimeInterval(70))
     m.hovered = .meetingBody
     check(m.scene(at: t0).tooltip == [FlowBarCopy.Run("Still recording · Reconnecting…")], "reconnecting tooltip")
-    m.setState(.meeting(.recording(wordCount: 1_284)), now: t0.addingTimeInterval(71))
-    check(m.scene(at: t0).tooltip?.first?.text.hasSuffix("words") == true && m.meetingStartedAt == t0.addingTimeInterval(2), "word count tooltip")
-    m.setState(.meeting(.stopping), now: t0.addingTimeInterval(80))
-    m.setState(.resting, now: t0.addingTimeInterval(90))
-    check(m.state == .resting && m.meetingPhase == nil && m.meetingStartedAt == nil, "the Notetaker's resting ends the meeting chrome")
-    m.setState(.meeting(.recording(wordCount: 0)), now: t0.addingTimeInterval(100))
-    m.setState(.hidden, now: t0.addingTimeInterval(101))
-    check(m.state == .hidden && m.meetingPhase == nil, "hidden from meeting chrome ends it too")
+    m.setMeetingPhase(.recording(wordCount: 1_284, startedAt: started), now: t0.addingTimeInterval(71))
+    check(m.scene(at: t0).tooltip?.first?.text.hasSuffix("words") == true && m.meetingStartedAt == started, "word count tooltip")
+    m.setMeetingPhase(.stopping, now: t0.addingTimeInterval(80))
+    m.setMeetingPhase(nil, now: t0.addingTimeInterval(90))
+    check(m.state == .resting && m.meetingPhase == nil && m.meetingStartedAt == nil, "ending the phase ends the meeting chrome")
+    m.setMeetingPhase(.recording(wordCount: 0, startedAt: t0.addingTimeInterval(100)), now: t0.addingTimeInterval(100))
+    m.setState(.listening(mode: .pushToTalk), now: t0.addingTimeInterval(101))
+    m.setMeetingPhase(nil, now: t0.addingTimeInterval(102))
+    check(m.state == .listening(mode: .pushToTalk) && m.meetingPhase == nil, "ending the phase under a dictation leaves the dictation")
+    m.setState(.resting, now: t0.addingTimeInterval(103))
+    check(m.state == .resting, "and nothing comes back afterwards")
 }
 
 private func flowBarCards() {
@@ -156,7 +160,7 @@ private func flowBarCards() {
     } else { check(false, "hands-free items") }
     let error = frames(.error)
     check(error.look.border.hexString == "#EE6A6A" && error.look.borderWidth == 1.5, "error rim 1.5 pt #ee6a6a")
-    let meeting = frames(.meeting(.recording(wordCount: 3), elapsed: 754))
+    let meeting = frames(.meeting(.recording(wordCount: 3, startedAt: t0), elapsed: 754))
     check(meeting.look.borderWidth == 2 && meeting.look.border.hexString == "#10B981" && meeting.item(.stop)?.width == 19, "meeting chrome")
     check(frames(.meeting(.pending, elapsed: 0)).look.border.hexString == "#5B5B59" && frames(.meeting(.pending, elapsed: 0)).item(.timer) == nil,
           "pending meeting: grey rim, no clock yet")
@@ -222,7 +226,7 @@ private func flowBarCards() {
     let mid = FlowBarSnapshot.pillFrame(from: resting, to: talking, after: 0.05)
     check(mid.width > 56.5 && mid.width < 73 && mid.midX == 256, "half way in time, most of the way in size, centred")
     check(FlowBarSnapshot.pillFrame(from: resting, to: talking, after: 0.1).size == CGSize(width: 73, height: 30), "settles at 100 ms")
-    var recording = FlowBarScene(); recording.pill = .meeting(.recording(wordCount: 1), elapsed: 5)
+    var recording = FlowBarScene(); recording.pill = .meeting(.recording(wordCount: 1, startedAt: t0), elapsed: 5)
     let recordingWidth = frames(recording.pill).pill.width
     check(FlowBarSnapshot.pillFrame(from: talking, to: recording, after: 0.1).width != recordingWidth
           && FlowBarSnapshot.pillFrame(from: talking, to: recording, after: 0.16).width == recordingWidth, "meeting morph 160 ms")
@@ -286,12 +290,12 @@ private extension Array where Element == Double {
     bar.now = { clock }
     check(bar.state == .hidden, "starts hidden")
 
-    bar.setState(.meeting(.recording(wordCount: 3)))
+    bar.setMeetingPhase(.recording(wordCount: 3, startedAt: clock))
     bar.setState(.listening(mode: .handsFree))
     check(bar.state == .listening(mode: .handsFree), "dictation over the meeting")
     bar.setState(.resting)
-    check(bar.state == .meeting(.recording(wordCount: 3)), "meeting chrome returns")
-    bar.setState(.resting)
+    check(bar.state == .meeting(.recording(wordCount: 3, startedAt: clock)), "meeting chrome returns")
+    bar.setMeetingPhase(nil)
     check(bar.state == .resting, "then rests")
 
     var answers: [MeetingPromptAnswer] = []
@@ -310,7 +314,7 @@ private extension Array where Element == Double {
     check(answers.last == .dismissed && bar.model.prompt == nil, "timeout dismisses")
     bar.showMeetingPrompt(MeetingPrompt(title: "D", platform: .zoom)) { answers.append($0) }
     bar.answerPrompt(.neverForApp)
-    check(answers.last == .notThisOne, "Don't ask for this app declines this meeting")
+    check(answers.last == .neverForThisApp, "Don't ask for this app is its own answer")
 
     var actions: [String] = []
     bar.show(FlowBarNotification(id: "x", title: "Hidden", timeout: 5, actions: ["Undo", "Open"])) { actions.append($0) }

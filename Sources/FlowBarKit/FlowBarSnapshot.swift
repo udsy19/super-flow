@@ -161,21 +161,21 @@ public enum FlowBarSnapshot {
             $0.showPrompt(MeetingPrompt(title: "", platform: .googleMeet), now: t0)
         }
         add("22-meeting-starting") { $0.setState(.meeting(.pending), now: t0) }
-        add("23-meeting-recording", level: 0.9, after: 754.2) { $0.setState(.meeting(.recording(wordCount: 1_284)), now: t0) }
+        add("23-meeting-recording", level: 0.9, after: 754.2) { $0.setState(.meeting(.recording(wordCount: 1_284, startedAt: t0)), now: t0) }
         add("24-meeting-recording-words", level: 0.2, after: 754.2) {
-            $0.setState(.meeting(.recording(wordCount: 1_284)), now: t0); $0.pointerInside = true; $0.hovered = .meetingBody
+            $0.setState(.meeting(.recording(wordCount: 1_284, startedAt: t0)), now: t0); $0.pointerInside = true; $0.hovered = .meetingBody
         }
         add("25-meeting-stop-tooltip", after: 3_725) {
-            $0.setState(.meeting(.recording(wordCount: 9_120)), now: t0); $0.pointerInside = true; $0.hovered = .meetingStop
+            $0.setState(.meeting(.recording(wordCount: 9_120, startedAt: t0)), now: t0); $0.pointerInside = true; $0.hovered = .meetingStop
         }
         add("26-meeting-reconnecting", after: 301) {
-            $0.setState(.meeting(.recording(wordCount: 410)), now: t0); $0.setState(.meeting(.reconnecting), now: t0)
+            $0.setState(.meeting(.recording(wordCount: 410, startedAt: t0)), now: t0); $0.setState(.meeting(.reconnecting), now: t0)
         }
         add("27-meeting-wrapping-up", after: 1_801) {
-            $0.setState(.meeting(.recording(wordCount: 410)), now: t0); $0.setState(.meeting(.stopping), now: t0)
+            $0.setState(.meeting(.recording(wordCount: 410, startedAt: t0)), now: t0); $0.setState(.meeting(.stopping), now: t0)
         }
         add("28-meeting-under-dictation", level: 0.4, after: 1.2) {
-            $0.setState(.meeting(.recording(wordCount: 410)), now: t0); $0.setState(.listening(mode: .handsFree), now: t0)
+            $0.setState(.meeting(.recording(wordCount: 410, startedAt: t0)), now: t0); $0.setState(.listening(mode: .handsFree), now: t0)
         }
         add("29-notification-mini") {
             $0.setState(.resting, now: t0)
@@ -199,7 +199,7 @@ public enum FlowBarSnapshot {
         }
         add("33-left-ready", edge: .left) { $0.setState(.resting, now: t0); $0.pointerInside = true; $0.hovered = .pill }
         add("34-left-hands-free", level: 0.7, after: 8.2, edge: .left) { $0.setState(.listening(mode: .handsFree), now: t0) }
-        add("35-right-meeting", level: 0.9, after: 95, edge: .right) { $0.setState(.meeting(.recording(wordCount: 220)), now: t0) }
+        add("35-right-meeting", level: 0.9, after: 95, edge: .right) { $0.setState(.meeting(.recording(wordCount: 220, startedAt: t0)), now: t0) }
         add("36-right-processing", edge: .right) { $0.setState(.processing, now: t0) }
         return cases
     }

@@ -109,7 +109,7 @@ public final class SpeechService: SpeechRecognizing {
     /// else whatever is loaded.
     private func engine(for languages: [String]) async throws -> Engine {
         try await ensureEngine()
-        let parakeetFits = SpeechLanguages.parakeetCovers(languages)
+        let parakeetFits = SupportedLanguages.parakeetCovers(languages)
         if let parakeet, parakeetFits, activeEngineID == parakeet.id || whisper == nil { return .parakeet(parakeet.engine) }
         if let whisper, activeEngineID == whisper.id || !parakeetFits { return .whisper(whisper.engine) }
         if !parakeetFits, let fallback = try await loadFallbackWhisper() { return .whisper(fallback) }
@@ -175,12 +175,12 @@ public final class SpeechService: SpeechRecognizing {
         await gate.acquire(priority)
         defer { gate.release() }
         try Task.checkCancellation()
-        let languages = options.languages.map(SpeechLanguages.base)
+        let languages = options.languages.map(SupportedLanguages.base)
         var transcript: Transcript
         switch try await engine(for: languages) {
         case .parakeet(let engine):
             transcript = try await engine.transcribe(clip, language: languages.count == 1 ? languages[0] : nil)
-            let identified = TextLanguage.identify(transcript.text, among: languages.isEmpty ? Array(SpeechLanguages.parakeet) : languages)
+            let identified = TextLanguage.identify(transcript.text, among: languages.isEmpty ? SupportedLanguages.parakeet : languages)
             transcript.language = languages.count == 1 ? languages[0] : identified.language
             transcript.languageConfidence = identified.confidence
             transcript.text = TranscriptGuard.accept(transcript.text, speechSeconds: speechSeconds, quiet: quiet)
@@ -208,7 +208,8 @@ public final class SpeechService: SpeechRecognizing {
         -> AsyncThrowingStream<TranscriptionEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task { @MainActor in
-                let session = IncrementalSession(vad: self.makeVAD(), parameters: priority == .meeting ? .meeting : .dictation)
+                let session = IncrementalSession(vad: self.makeVAD(), parameters: priority == .meeting ? .meeting : .dictation,
+                                                 channel: options.channel)
                 do {
                     for await clip in audio {
                         try Task.checkCancellation()
@@ -345,12 +346,14 @@ final class IncrementalSession {
     private var scored = 0
     private var origin: TimeInterval?
     private var lastPartialAt = 0
+    private let channel: AudioChannel
     private(set) var segments: [TranscriptSegment] = []
     private var confidences: [Double] = []
     var language: (String, Double)?
 
-    init(vad: SpeechProbabilityModel, parameters: VADParameters) {
+    init(vad: SpeechProbabilityModel, parameters: VADParameters, channel: AudioChannel = .mic) {
         self.vad = vad
+        self.channel = channel
         segmenter = StreamingSegmenter(window: vad.window, parameters: parameters)
     }
 
@@ -407,7 +410,7 @@ final class IncrementalSession {
         buffer.removeFirst(drop)
         bufferStart += drop
         guard !transcript.text.isEmpty else { return }
-        segments.append(TranscriptSegment(start: time(of: region.lowerBound), end: time(of: region.upperBound), text: transcript.text))
+        segments.append(TranscriptSegment(channel: channel, start: time(of: region.lowerBound), end: time(of: region.upperBound), text: transcript.text))
         confidences.append(transcript.confidence)
     }
 }

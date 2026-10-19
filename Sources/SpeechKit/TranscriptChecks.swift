@@ -71,13 +71,13 @@ public enum TranscriptGuard {
 /// language?" hint (local-models.md §2.10). Too little text is not judged.
 public enum TextLanguage {
     public static func identify(_ text: String, among candidates: [String]) -> (language: String, confidence: Double) {
-        let allowed = candidates.map(SpeechLanguages.base)
+        let allowed = candidates.map(SupportedLanguages.base)
         let fallback = allowed.first ?? "en"
         guard text.split(whereSeparator: \.isWhitespace).count >= 3 else { return (fallback, 1) }
         let recognizer = NLLanguageRecognizer()
         recognizer.processString(text)
         let hypotheses = recognizer.languageHypotheses(withMaximum: 40)
-        let scored = hypotheses.map { (SpeechLanguages.base($0.key.rawValue), $0.value) }
+        let scored = hypotheses.map { (SupportedLanguages.base($0.key.rawValue), $0.value) }
         let pool = allowed.isEmpty ? scored : scored.filter { allowed.contains($0.0) }
         guard let best = pool.max(by: { $0.1 < $1.1 }) else { return (fallback, 0) }
         return (best.0, best.1)

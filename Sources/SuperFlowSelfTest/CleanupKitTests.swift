@@ -399,7 +399,7 @@ private func transcript(of request: LLMRequest) -> String {
 
 /// GGUF folders a developer points the self-test at (`SUPERFLOW_DEV_MODELS`, colon-separated), else the installed LLMs.
 /// Forked from NativeSmokeTests' private lookup because that file belongs to another module's owner.
-private func devGGUF() -> (URL, String)? {
+func devGGUF() -> (URL, String)? {
     let folders: [URL]
     if let env = ProcessInfo.processInfo.environment["SUPERFLOW_DEV_MODELS"] {
         folders = env.split(separator: ":").map { URL(fileURLWithPath: String($0)) }

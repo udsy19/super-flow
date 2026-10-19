@@ -34,6 +34,7 @@ public enum HubSection: String, CaseIterable, Sendable {
     public static func section(for page: HubPage) -> HubSection? {
         switch page {
         case .home, .insights: .home
+        case .history: .history
         case .notetaker, .tasks: .meetings
         case .dictionary: .dictionary
         case .snippets: .snippets
@@ -162,7 +163,7 @@ final class HubStore: ObservableObject {
     private var cancellables: Set<AnyCancellable> = []
 
     init(notes: NotesStore? = nil) {
-        self.notes = notes ?? NotesStore()
+        self.notes = notes ?? NotesStore(history: Services.history)
         reload(.reloaded)
         Services.history?.changes.receive(on: DispatchQueue.main).sink { [weak self] in self?.reload($0) }.store(in: &cancellables)
         Services.models?.changes.receive(on: DispatchQueue.main)
@@ -176,6 +177,7 @@ final class HubStore: ObservableObject {
         case .dictations: dictations = history.dictations(matching: "", limit: Self.recentLimit, offset: 0)
         case .dictionary: dictionary = history.dictionary
         case .snippets: snippets = history.snippets
+        case .notes: break
         case .meetings, .actionItems: reloadMeetings()
         case .reloaded:
             dictations = history.dictations(matching: "", limit: Self.recentLimit, offset: 0)

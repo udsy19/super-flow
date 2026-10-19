@@ -22,15 +22,16 @@ final class HotkeyMonitor: HotkeyMonitoring {
     let recorderEvents: AsyncStream<KeyChord>
     private let eventContinuation: AsyncStream<HotkeyEvent>.Continuation
     private let tap: EventTap
-    private var mode: EventTap.Mode?
+    private var mode: HotkeyTapMode?
     /// The permission state the tap was last set up for.
-    private var grantedMode: EventTap.Mode?
+    private var grantedMode: HotkeyTapMode?
     private var wanted = false
     private var healthTimer: Timer?
     private var secureInputBlocked = false
     private var sawFnKey = false
 
     var isRunning: Bool { mode != nil }
+    var tapMode: HotkeyTapMode? { mode }
     var isRecording = false { didSet { tap.setRecording(isRecording) } }
     /// An Fn press seen by the tap settles it; otherwise the connected keyboards decide.
     var hasFnKey: Bool { sawFnKey || FnKeyboard.hasFnKey(FnKeyboard.connected()) }
@@ -76,7 +77,7 @@ final class HotkeyMonitor: HotkeyMonitoring {
     private func connectTap() {
         let trusted = AXIsProcessTrusted()
         let canListen = trusted || CGPreflightListenEventAccess()
-        let granted: EventTap.Mode? = trusted ? .active : canListen ? .listenOnly : nil
+        let granted: HotkeyTapMode? = trusted ? .active : canListen ? .listenOnly : nil
         guard granted != grantedMode || (granted != nil && mode == nil) else { return }
         grantedMode = granted
         let previous = mode
@@ -86,7 +87,7 @@ final class HotkeyMonitor: HotkeyMonitoring {
         } else {
             mode = tap.install(trusted: trusted, canListen: canListen)
         }
-        if mode != previous { Log.hotkeys.info("Event tap: \(self.mode.map { "\($0)" } ?? "off", privacy: .public)") }
+        if mode != previous { Log.hotkeys.info("Event tap: \(self.mode?.rawValue ?? "off", privacy: .public)") }
     }
 
     private func checkHealth() {
@@ -107,14 +108,6 @@ final class HotkeyMonitor: HotkeyMonitoring {
 /// its callback returns, so it must never wait behind the main thread (AX reads, UI). The engine is only touched on
 /// that thread; the main actor reaches it through `sync`/`async` blocks, and decisions leave through `output`.
 final class EventTap: @unchecked Sendable {
-    enum Mode: String, CustomStringConvertible {
-        /// Accessibility granted: completed chords can be swallowed.
-        case active
-        /// Input Monitoring only: shortcuts fire but every key still reaches the app.
-        case listenOnly = "listen-only"
-        var description: String { rawValue }
-    }
-
     private let runLoop: CFRunLoop
     private var engine: ChordEngine
     private var port: CFMachPort?
@@ -133,12 +126,12 @@ final class EventTap: @unchecked Sendable {
     }
 
     /// Creates the tap: active when `trusted`, else listen-only when `canListen`. Returns what was installed.
-    func install(trusted: Bool, canListen: Bool) -> Mode? {
+    func install(trusted: Bool, canListen: Bool) -> HotkeyTapMode? {
         sync { [self] in
             removeTap()
             let types: [CGEventType] = [.keyDown, .keyUp, .flagsChanged, .otherMouseDown, .otherMouseUp]
             let mask = types.reduce(CGEventMask(0)) { $0 | (1 << $1.rawValue) }
-            let candidates: [(CGEventTapOptions, Mode)] = (trusted ? [(.defaultTap, .active)] : []) + (canListen ? [(.listenOnly, .listenOnly)] : [])
+            let candidates: [(CGEventTapOptions, HotkeyTapMode)] = (trusted ? [(.defaultTap, .active)] : []) + (canListen ? [(.listenOnly, .listenOnly)] : [])
             for (options, mode) in candidates {
                 guard let port = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: options,
                                                    eventsOfInterest: mask, callback: eventTapCallback,

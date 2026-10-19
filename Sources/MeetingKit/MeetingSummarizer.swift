@@ -33,18 +33,18 @@ public protocol NotesLanguageModel: AnyObject {
     func complete(_ request: NotesRequest) async throws -> String
 }
 
-/// Notes through CleanupKit's LLM (`TextCleaning.transform`), the only LLM entry point in the contracts. It runs on the
-/// model CleanupKit has loaded (the cleanup model), not on `Defaults[.notesModelID]`, until the contracts can ask for the
-/// notes model. The transform input cap (`DictationLimits.transformMaxWords`) bounds each call, labels included.
+/// Notes through CleanupKit's notes role (`TextCleaning.generate(_:instruction:role:)`): the notes model of
+/// `Defaults[.notesModelID]` (Qwen3.5-4B by default) once `MeetingRecorder` has loaded it. The transform input cap
+/// (`DictationLimits.transformMaxWords`) bounds each call, labels included.
 @MainActor
 final class CleanupNotesModel: NotesLanguageModel {
-    var modelID: String { Defaults[.cleanupModelID] ?? Defaults[.notesModelID] }
-    var isReady: Bool { Services.cleanup?.isModelReady ?? false }
+    var modelID: String { Defaults[.notesModelID] }
+    var isReady: Bool { Services.cleanup?.isModelReady(for: .notes) ?? false }
     var inputWordBudget: Int { DictationLimits.transformMaxWords - 150 }
 
     func complete(_ request: NotesRequest) async throws -> String {
         guard let cleanup = Services.cleanup else { throw MeetingNotesError.modelNotReady }
-        return try await cleanup.transform(request.input, instruction: request.instruction)
+        return try await cleanup.generate(request.input, instruction: request.instruction, role: .notes)
     }
 }
 
@@ -273,10 +273,7 @@ enum Prompts {
 /// Cuts finalised segments into chunks of at most `wordBudget` words, in time order (the same cut every time, so chunks
 /// mapped during the meeting are found again at the end).
 enum TranscriptChunker {
-    static func finalSegments(_ segments: [TranscriptSegment]) -> [TranscriptSegment] {
-        segments.filter { $0.isFinal && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-            .sorted { ($0.start, $0.end) < ($1.start, $1.end) }
-    }
+    static func finalSegments(_ segments: [TranscriptSegment]) -> [TranscriptSegment] { MeetingExport.finalSegments(segments) }
 
     /// Words a rendered line adds besides the text ("[12:04] Speaker 1:"), counted as a constant so the cut does not
     /// depend on labels, which change once speakers are split and named.
@@ -320,13 +317,7 @@ enum TranscriptChunker {
     }
 
     static func render(_ segments: [TranscriptSegment], label: (TranscriptSegment) -> String) -> String {
-        segments.map { "[\(timestamp($0.start))] \(label($0)): \($0.text)" }.joined(separator: "\n")
-    }
-
-    static func timestamp(_ seconds: TimeInterval) -> String {
-        let total = max(0, Int(seconds))
-        return total >= 3600 ? String(format: "%d:%02d:%02d", total / 3600, total / 60 % 60, total % 60)
-                             : String(format: "%02d:%02d", total / 60, total % 60)
+        segments.map { "[\(MeetingMarker.timestamp($0.start))] \(label($0)): \($0.text)" }.joined(separator: "\n")
     }
 }
 

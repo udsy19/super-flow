@@ -220,10 +220,10 @@ struct GeneralPane: View {
     }
 }
 
-/// The languages the installed engines know (catalog data), by display name.
+/// Every language an engine knows (`SupportedLanguages`) plus anything already selected, by display name.
 enum LanguageList {
     static var all: [String] {
-        let codes = Set(ModelCatalog.all.flatMap(\.languages).filter { $0 != "auto" }).union(Defaults[.selectedLanguages])
+        let codes = Set(SupportedLanguages.all).union(Defaults[.selectedLanguages])
         return codes.sorted { HubFormat.languageName($0) < HubFormat.languageName($1) }
     }
 }

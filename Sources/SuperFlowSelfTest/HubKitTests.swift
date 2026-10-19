@@ -96,14 +96,17 @@ func registerHubKitTests() {
         let groups = TranscriptGroup.make(meeting)
         check(groups.map(\.speaker) == ["You", "Priya"] && groups[0].lines.count == 2 && groups.map(\.ordinal) == [0, 1],
               "consecutive lines by one speaker group; partials are left out")
-        let md = MeetingMarkdown.render(meeting)
+        let md = MeetingExport.text(meeting, format: .markdown)
         for part in ["# Launch / review", "## Summary", "We agreed the plan.", "## Key decisions\n\n- Ship on Tuesday",
-                     "- [x] Send the launch checklist (Priya)", "## Follow-ups", "## Notes\n\nAsk about the budget.",
+                     "- [x] Send the launch checklist — Priya", "## Follow-ups", "## Notes\n\nAsk about the budget.",
                      "**You** (00:01): Thanks for joining. Let's start.", "**Priya** (00:07): Sounds good.", "42 min", "Zoom"] {
             check(md.contains(part), "Markdown has \(part.debugDescription)")
         }
         check(!md.contains("partial"), "no partial text in the export")
-        check(MeetingMarkdown.fileName(meeting).hasSuffix("Launch - review.md") && !MeetingMarkdown.fileName(meeting).contains("/"),
+        let overridden = MeetingExport.text(meeting, format: .markdown, actionItems: [ActionItem(text: "Send the deck", owner: "Sam")])
+        check(overridden.contains("- [ ] Send the deck — Sam") && !overridden.contains("launch checklist"), "the store's action items replace the summary's")
+        check(MeetingExport.fileName(for: meeting, format: .markdown).hasSuffix("Launch   review 2025-10-09.md")
+                  && !MeetingExport.fileName(for: meeting, format: .markdown).contains("/"),
               "file name is safe")
         check(HubFormat.audioExpiry(of: Meeting(title: "x", startedAt: start, endedAt: start, tracks: [AudioTrack(channel: .mic, file: "mic.caf")]),
                                     days: 30) == start.addingTimeInterval(30 * 86_400), "audio expiry from the end of the meeting")
@@ -133,22 +136,19 @@ func registerHubKitTests() {
 }
 
 @MainActor private func hubNotesStore() {
-    let url = FileManager.default.temporaryDirectory.appendingPathComponent("hubkit-notes-\(UUID().uuidString).json")
-    defer { try? FileManager.default.removeItem(at: url) }
-    let store = NotesStore(url: url)
+    let history = FakeHubHistory()
+    let store = NotesStore(history: history)
     let note = store.create()
     store.update(note.id, text: "Groceries\n\nmilk\neggs")
     check(store.notes.first?.title == "Groceries" && store.notes.first?.preview == "milk eggs", "title and preview")
-    let reloaded = NotesStore(url: url)
-    check(reloaded.notes.map(\.text) == ["Groceries\n\nmilk\neggs"], "notes survive a reload")
+    check(history.notes.map(\.text) == ["Groceries\n\nmilk\neggs"], "notes are rows in the store")
+    let reloaded = NotesStore(history: history)
+    check(reloaded.notes.map(\.text) == ["Groceries\n\nmilk\neggs"], "a new view reads the store")
     reloaded.delete(note.id)
-    check(NotesStore(url: url).notes.isEmpty, "delete persists")
-    try? Data("not json".utf8).write(to: url)
-    check(NotesStore(url: url).notes.isEmpty && !FileManager.default.fileExists(atPath: url.path), "a damaged file is set aside")
-    let folder = url.deletingLastPathComponent()
-    for name in (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? [] where name.hasPrefix(url.lastPathComponent) {
-        try? FileManager.default.removeItem(at: folder.appendingPathComponent(name))
-    }
+    check(NotesStore(history: history).notes.isEmpty, "delete reaches the store")
+    let memory = NotesStore(history: nil)
+    memory.update(memory.create().id, text: "Offline")
+    check(memory.sorted.first?.title == "Offline", "without a store the notes live in memory")
     check(ScratchNote(text: "  \n").title == "New note", "an empty note's title")
 }
 
@@ -160,9 +160,7 @@ func registerHubKitTests() {
     Services.meetings = history
     Services.models = models
     defer { Services.history = saved.0; Services.meetings = saved.1; Services.models = saved.2 }
-    let notesURL = FileManager.default.temporaryDirectory.appendingPathComponent("hubkit-render-notes-\(UUID().uuidString).json")
-    defer { try? FileManager.default.removeItem(at: notesURL) }
-    let notes = NotesStore(url: notesURL)
+    let notes = NotesStore(history: nil)
     for text in ["Lisbon trip\n\nBook flights before Friday. Ask Marco about the apartment near Alfama.",
                  "Q4 planning\n\nThree bets: importer, offline mode, faster onboarding.",
                  "Gift ideas\n\nSam: film camera, a good notebook."] {
@@ -218,6 +216,7 @@ private final class FakeHubHistory: HistoryStoring, MeetingStoring {
     var dictionary: [DictionaryEntry] = []
     var snippets: [Snippet] = []
     var transforms: [TransformPrompt] = []
+    var notes: [ScratchNote] = []
     var meetingList: [Meeting] = []
     var actionItems: [ActionItem] = []
     let subject = PassthroughSubject<StoreChange, Never>()
@@ -331,6 +330,8 @@ private final class FakeHubHistory: HistoryStoring, MeetingStoring {
     func deleteSnippet(_ id: UUID) throws { snippets.removeAll { $0.id == id }; subject.send(.snippets) }
     func save(_ transform: TransformPrompt) throws {}
     func deleteTransform(_ id: UUID) throws {}
+    func save(_ note: ScratchNote) throws { notes.removeAll { $0.id == note.id }; notes.append(note); subject.send(.notes) }
+    func deleteNote(_ id: UUID) throws { notes.removeAll { $0.id == id }; subject.send(.notes) }
 
     // MeetingStoring
     func meeting(_ id: UUID) -> Meeting? { meetingList.first { $0.id == id } }

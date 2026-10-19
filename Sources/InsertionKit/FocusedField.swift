@@ -51,6 +51,7 @@ enum AX {
 @MainActor
 struct FocusedField {
     let element: AXUIElement
+    let role: String?
     let isSecure: Bool
     let isEditable: Bool
 
@@ -61,6 +62,7 @@ struct FocusedField {
         let role = AX.string(element, kAXRoleAttribute)
         return FocusedField(
             element: element,
+            role: role,
             isSecure: FieldRules.isSecure(role: role, subrole: AX.string(element, kAXSubroleAttribute),
                                           secureInputOwner: SecureInput.ownerPID(), targetPID: pid),
             isEditable: FieldRules.isEditable(role: role, valueSettable: AX.isSettable(element, kAXValueAttribute)))

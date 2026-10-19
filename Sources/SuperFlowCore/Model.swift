@@ -53,12 +53,17 @@ public struct AppContext: Codable, Hashable, Sendable {
     public var isSecure: Bool
     /// Words seen in the visible accessibility tree, for vocabulary hints.
     public var nearbyWords: [String]
+    /// The Accessibility role of the focused element ("AXTextField", "AXTextArea", "AXWebArea"…); nil when none.
+    public var fieldRole: String?
 
     public init(app: AppRecord? = nil, textBefore: String = "", selectedText: String = "", textAfter: String = "",
-                isEditable: Bool = false, isSecure: Bool = false, nearbyWords: [String] = []) {
+                isEditable: Bool = false, isSecure: Bool = false, nearbyWords: [String] = [], fieldRole: String? = nil) {
         self.app = app; self.textBefore = textBefore; self.selectedText = selectedText; self.textAfter = textAfter
-        self.isEditable = isEditable; self.isSecure = isSecure; self.nearbyWords = nearbyWords
+        self.isEditable = isEditable; self.isSecure = isSecure; self.nearbyWords = nearbyWords; self.fieldRole = fieldRole
     }
+
+    /// A one-line field (a text field or combo box): Return would send or submit rather than add a line.
+    public var isSingleLineField: Bool { fieldRole == "AXTextField" || fieldRole == "AXComboBox" }
 }
 
 // MARK: - Dictation (§2)
@@ -128,6 +133,21 @@ public enum DictationLimits {
     /// Pre-roll kept before the key went down and post-roll after it came up (local-models.md §2.8).
     public static let preRoll: TimeInterval = 0.3
     public static let postRoll: TimeInterval = 0.15
+    /// No microphone frame for this long after the start → dismiss with `noAudioDuringDictation`.
+    public static let noAudioTimeout: TimeInterval = 3
+    /// A dictation shorter than this with no speech is a tap, not a failure: nothing is shown.
+    public static let silentTapDuration: TimeInterval = 1.5
+    /// LLM wall-time caps (local-models.md §3.6, §4): short utterances, and longer ones whose earlier segments were
+    /// already handled while the key was held.
+    public static let cleanupBudgetShort: TimeInterval = 1.0
+    public static let cleanupBudgetLong: TimeInterval = 2.5
+    public static let cleanupShortWords = 12
+    /// How long edits to the inserted text are watched for auto-learn (§9.4).
+    public static let autoLearnWindow: TimeInterval = 30
+    /// How long "Cleaned up!" / "Done." stay on the pill before it rests.
+    public static let completedStateDuration: TimeInterval = 2
+
+    public static func cleanupBudget(words: Int) -> TimeInterval { words <= cleanupShortWords ? cleanupBudgetShort : cleanupBudgetLong }
 }
 
 /// One dictation in History (§11.1, `History` table §19.1).
@@ -211,6 +231,31 @@ public struct Snippet: Codable, Hashable, Identifiable, Sendable {
 
     public init(id: UUID = UUID(), trigger: String, expansion: String, createdAt: Date = Date(), useCount: Int = 0) {
         self.id = id; self.trigger = trigger; self.expansion = expansion; self.createdAt = createdAt; self.useCount = useCount
+    }
+}
+
+// MARK: - Notes (§11.4)
+
+/// A Notes page entry: quick notes and drafts the user dictates into (the Scratchpad without the floating window).
+public struct ScratchNote: Codable, Hashable, Identifiable, Sendable {
+    public var id: UUID
+    public var text: String
+    public var createdAt: Date
+    public var updatedAt: Date
+
+    public init(id: UUID = UUID(), text: String = "", createdAt: Date = Date(), updatedAt: Date = Date()) {
+        self.id = id; self.text = text; self.createdAt = createdAt; self.updatedAt = updatedAt
+    }
+
+    /// The first non-empty line, or "New note".
+    public var title: String {
+        text.split(whereSeparator: \.isNewline).lazy.map { $0.trimmingCharacters(in: .whitespaces) }.first { !$0.isEmpty } ?? "New note"
+    }
+
+    /// The text after the title line, flattened to one line.
+    public var preview: String {
+        let lines = text.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        return lines.dropFirst().joined(separator: " ")
     }
 }
 
@@ -347,9 +392,11 @@ public struct TranscriptionOptions: Codable, Hashable, Sendable {
     public var vocabulary: [String]
     /// The previous dictation's text, for continuity.
     public var previousText: String?
+    /// The channel the audio comes from; segments of an incremental transcription carry it.
+    public var channel: AudioChannel
 
-    public init(languages: [String] = [], vocabulary: [String] = [], previousText: String? = nil) {
-        self.languages = languages; self.vocabulary = vocabulary; self.previousText = previousText
+    public init(languages: [String] = [], vocabulary: [String] = [], previousText: String? = nil, channel: AudioChannel = .mic) {
+        self.languages = languages; self.vocabulary = vocabulary; self.previousText = previousText; self.channel = channel
     }
 }
 
@@ -443,6 +490,26 @@ public struct MeetingSummary: Codable, Hashable, Sendable {
     }
 }
 
+/// A moment the user marked while recording ("Pricing", or just a bookmark), seconds into the meeting.
+public struct MeetingMarker: Codable, Hashable, Identifiable, Sendable {
+    public var id: UUID
+    public var time: TimeInterval
+    public var label: String
+
+    public init(id: UUID = UUID(), time: TimeInterval, label: String = "") {
+        self.id = id; self.time = time; self.label = label
+    }
+
+    /// "12:04" or "1:02:30".
+    public var timestamp: String { MeetingMarker.timestamp(time) }
+
+    public static func timestamp(_ seconds: TimeInterval) -> String {
+        let total = max(0, Int(seconds))
+        return total >= 3600 ? String(format: "%d:%02d:%02d", total / 3600, total / 60 % 60, total % 60)
+                             : String(format: "%02d:%02d", total / 60, total % 60)
+    }
+}
+
 /// A recorded meeting (§19.1 `Meetings`, §20).
 public struct Meeting: Codable, Hashable, Identifiable, Sendable {
     public var id: UUID
@@ -458,6 +525,8 @@ public struct Meeting: Codable, Hashable, Identifiable, Sendable {
     public var segments: [TranscriptSegment]
     /// The user's own notes, kept verbatim.
     public var notes: String
+    /// Moments marked while recording, in time order.
+    public var markers: [MeetingMarker]
     public var summary: MeetingSummary?
     /// Set when the audio files were deleted by retention or by the user; transcript and notes stay.
     public var audioDeletedAt: Date?
@@ -465,11 +534,37 @@ public struct Meeting: Codable, Hashable, Identifiable, Sendable {
 
     public init(id: UUID = UUID(), title: String, startedAt: Date = Date(), endedAt: Date? = nil, platform: MeetingPlatform = .other,
                 calendarEventID: String? = nil, participants: [Participant] = [], speakers: [Speaker] = [], tracks: [AudioTrack] = [],
-                segments: [TranscriptSegment] = [], notes: String = "", summary: MeetingSummary? = nil, audioDeletedAt: Date? = nil,
-                folder: String? = nil) {
+                segments: [TranscriptSegment] = [], notes: String = "", markers: [MeetingMarker] = [], summary: MeetingSummary? = nil,
+                audioDeletedAt: Date? = nil, folder: String? = nil) {
         self.id = id; self.title = title; self.startedAt = startedAt; self.endedAt = endedAt; self.platform = platform
         self.calendarEventID = calendarEventID; self.participants = participants; self.speakers = speakers; self.tracks = tracks
-        self.segments = segments; self.notes = notes; self.summary = summary; self.audioDeletedAt = audioDeletedAt; self.folder = folder
+        self.segments = segments; self.notes = notes; self.markers = markers; self.summary = summary
+        self.audioDeletedAt = audioDeletedAt; self.folder = folder
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, startedAt, endedAt, platform, calendarEventID, participants, speakers, tracks, segments, notes, markers, summary
+        case audioDeletedAt, folder
+    }
+
+    /// Rows written before markers existed decode with none.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        title = try c.decode(String.self, forKey: .title)
+        startedAt = try c.decode(Date.self, forKey: .startedAt)
+        endedAt = try c.decodeIfPresent(Date.self, forKey: .endedAt)
+        platform = try c.decode(MeetingPlatform.self, forKey: .platform)
+        calendarEventID = try c.decodeIfPresent(String.self, forKey: .calendarEventID)
+        participants = try c.decode([Participant].self, forKey: .participants)
+        speakers = try c.decode([Speaker].self, forKey: .speakers)
+        tracks = try c.decode([AudioTrack].self, forKey: .tracks)
+        segments = try c.decode([TranscriptSegment].self, forKey: .segments)
+        notes = try c.decode(String.self, forKey: .notes)
+        markers = try c.decodeIfPresent([MeetingMarker].self, forKey: .markers) ?? []
+        summary = try c.decodeIfPresent(MeetingSummary.self, forKey: .summary)
+        audioDeletedAt = try c.decodeIfPresent(Date.self, forKey: .audioDeletedAt)
+        folder = try c.decodeIfPresent(String.self, forKey: .folder)
     }
 
     public var duration: TimeInterval { (endedAt ?? Date()).timeIntervalSince(startedAt) }

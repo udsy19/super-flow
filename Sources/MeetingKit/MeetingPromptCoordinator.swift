@@ -85,11 +85,18 @@ public final class MeetingPromptCoordinator {
     private func ask(_ prompt: MeetingPrompt, for meeting: DetectedMeeting) {
         guard let flowBar = Services.flowBar else { return }
         flowBar.showMeetingPrompt(prompt) { [weak self] answer in
-            guard answer == .record, let self else { return }
-            Task { @MainActor in
-                do { try await self.recorder.start(meeting) } catch {
-                    Log.meetings.error("Couldn't start recording: \(error.localizedDescription, privacy: .public)")
+            guard let self else { return }
+            switch answer {
+            case .record:
+                Task { @MainActor in
+                    do { try await self.recorder.start(meeting) } catch {
+                        Log.meetings.error("Couldn't start recording: \(error.localizedDescription, privacy: .public)")
+                    }
                 }
+            case .neverForThisApp:
+                if let app = meeting.bundleID { self.setNeverAsk(true, bundleID: app) }
+            case .notThisOne, .dismissed:
+                break
             }
         }
     }

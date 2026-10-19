@@ -57,7 +57,7 @@ public actor WhisperEngine {
         var probabilities = [Float](repeating: 0, count: Int(whisper_lang_max_id()) + 1)
         let top = whisper_lang_auto_detect(context, 0, WhisperEngine.threads, &probabilities)
         guard top >= 0 else { throw SpeechError.failed("Language detection failed") }
-        let allowed = Set(candidates.map(SpeechLanguages.base))
+        let allowed = Set(candidates.map(SupportedLanguages.base))
         var best = (language: String(cString: whisper_lang_str(top)), probability: Double(probabilities[Int(top)]))
         if !allowed.isEmpty {
             best = ("", -1)

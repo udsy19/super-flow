@@ -11,6 +11,7 @@ func registerCoreTests() {
     SelfTest.cases.append(("Core.themeMetrics", { coreThemeMetrics() }))
     SelfTest.cases.append(("Core.appLists", { coreAppLists() }))
     SelfTest.cases.append(("Core.modelCatalog", { coreModelCatalog() }))
+    SelfTest.cases.append(("Core.contractAdditions", { coreContractAdditions() }))
 }
 
 private func roundTrip<T: Codable & Equatable>(_ value: T) -> Bool {
@@ -189,6 +190,37 @@ private func coreAppLists() {
     check(AppLists.conferencingApps["us.zoom.xos"] == .zoom && AppLists.platform(forJoinURL: URL(string: "https://meet.google.com/abc-defg-hij")!) == .googleMeet
           && AppLists.platform(forJoinURL: URL(string: "https://us02web.zoom.us/j/123")!) == .zoom && AppLists.platform(forJoinURL: URL(string: "https://example.com")!) == nil,
           "meeting platforms")
+}
+
+private func coreContractAdditions() {
+    // A meeting row written before markers existed still decodes.
+    let old = #"{"id":"6A0585D3-6ADB-4690-BA61-AD0FD3D70BDB","title":"Old","startedAt":1800000000,"platform":"zoom","participants":[],"speakers":[],"tracks":[],"segments":[],"notes":""}"#
+    let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .secondsSince1970
+    let decoded = try? decoder.decode(Meeting.self, from: Data(old.utf8))
+    check(decoded?.markers.isEmpty == true && decoded?.title == "Old", "meetings without markers decode")
+    var meeting = Meeting(title: "M", markers: [MeetingMarker(time: 3725, label: "Pricing")])
+    meeting.segments = [TranscriptSegment(channel: .system, start: 1, end: 2, text: "Hi")]
+    let encoded = try? JSONEncoder().encode(meeting)
+    check(encoded.flatMap { try? JSONDecoder().decode(Meeting.self, from: $0) }?.markers.first?.timestamp == "1:02:05", "markers round trip with a timestamp")
+    check(MeetingExport.text(meeting, format: .markdown).contains("## Markers\n\n- 1:02:05 Pricing"), "export lists markers")
+    check(MeetingExport.text(meeting, format: .plainText).contains("THEM (00:01): Hi"), "plain-text transcript by channel label")
+    check(HubPage(rawValue: "history") == .history && StoreChange.notes != .reloaded, "history page and notes change")
+    check(TransformError.tooLong.recoverySuggestion?.contains("1000") == true && TransformError.modelNotReady.errorDescription?.contains("getting ready") == true,
+          "transform errors in Core")
+    check(AppContext(fieldRole: "AXTextField").isSingleLineField && !AppContext(fieldRole: "AXTextArea").isSingleLineField, "single-line fields by role")
+    check(TranscriptionOptions().channel == .mic && TranscriptionOptions(channel: .system).channel == .system, "channel on options")
+    check(SupportedLanguages.parakeetCovers(["en", "de"]) && !SupportedLanguages.parakeetCovers(["en", "ja"]) && !SupportedLanguages.parakeetCovers([])
+              && SupportedLanguages.whisper.count == 99 && SupportedLanguages.all.contains("ja") && SupportedLanguages.base("pt_BR") == "pt",
+          "language lists")
+    check(AppLists.category(bundleID: "com.openai.chat") == .ai && AppLists.category(bundleID: "com.apple.Safari", url: "https://claude.ai/new") == .ai,
+          "AI chat apps and sites are in Core")
+    check(ModelCatalog.localVQE.repository == "FluidInference/localvqe-coreml" && ModelCatalog.all.filter { $0.repository != nil }.allSatisfy { $0.revision?.count == 40 },
+          "Core ML sets pin a commit")
+    check(DictationLimits.cleanupBudget(words: 5) == 1.0 && DictationLimits.cleanupBudget(words: 40) == 2.5, "cleanup budgets")
+    check(MeetingBarPhase.recording(wordCount: 1, startedAt: Date(timeIntervalSince1970: 1)) == .recording(wordCount: 1, startedAt: Date(timeIntervalSince1970: 1)),
+          "meeting phase carries its start")
+    check(GlobeKey.Usage(rawValue: 3) == .startDictation && GlobeKey.Usage(rawValue: 0) == .doNothing, "globe key usages")
+    check(ScratchNote(text: "Title\n\nbody line").title == "Title" && ScratchNote(text: "Title\n\nbody line").preview == "body line", "scratch note title and preview")
 }
 
 private func coreModelCatalog() {

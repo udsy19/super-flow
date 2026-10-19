@@ -32,6 +32,8 @@ struct RulePass {
         /// The text with snippet placeholders, ready for the LLM or for `finish`.
         var text: String
         var expansions: [String: String]
+        /// The snippets the placeholders stand for, in order of first use.
+        var snippets: [UUID]
         var actions: [PostInsertAction]
         /// Words other than placeholders.
         var wordCount: Int
@@ -41,8 +43,8 @@ struct RulePass {
         var text = raw.replacingOccurrences(of: "\r\n", with: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         let actions: [PostInsertAction]
         (text, actions) = SpokenCommands.keyActions(text, pressEnterEnabled: pressEnterEnabled)
-        let expansions: [String: String]
-        (text, expansions) = vocabulary.insertPlaceholders(text)
+        let placeholders = vocabulary.insertPlaceholders(text)
+        text = placeholders.text
         text = vocabulary.applyReplacements(text)
 
         var words = Words(text)
@@ -60,7 +62,7 @@ struct RulePass {
             // Terminals take commands ("git status") as typed: no capitals added.
             if category != .terminal { Casing.sentenceCase(&words, english: english) }
         }
-        return Prepared(text: Casing.tidy(words.text), expansions: expansions, actions: actions,
+        return Prepared(text: Casing.tidy(words.text), expansions: placeholders.expansions, snippets: placeholders.snippets, actions: actions,
                         wordCount: words.items.filter { !$0.isPlaceholder }.count)
     }
 

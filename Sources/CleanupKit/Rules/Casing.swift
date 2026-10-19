@@ -62,6 +62,29 @@ enum Casing {
 
 /// The finish each writing style asks for (behaviour.md §8.4; the examples in strings.md `personalization_*`).
 enum Style {
+    /// Style detection (§8.4 "Automatically set messaging style"): how the user already writes in this field, from the
+    /// text before the cursor. Needs `detectionMinimumWords` words; nil otherwise. All lower case → very casual;
+    /// sentences left without end punctuation → casual; exclamation marks → excited; else formal.
+    static let detectionMinimumWords = 8
+
+    static func detect(_ before: String) -> WritingStyle? {
+        let text = before.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard Dictation.countWords(text) >= detectionMinimumWords else { return nil }
+        let letters = text.filter(\.isLetter)
+        guard !letters.isEmpty else { return nil }
+        if !letters.contains(where: \.isUppercase) { return .veryCasual }
+        let sentences = text.components(separatedBy: .newlines).flatMap { line in
+            line.components(separatedBy: CharacterSet(charactersIn: ".!?")).map { $0.trimmingCharacters(in: .whitespaces) }
+        }.filter { Dictation.countWords($0) >= 3 }
+        let lines = text.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        let openLines = lines.filter { endsOpen($0) }.count
+        let exclamations = text.filter { $0 == "!" }.count
+        let periods = text.filter { $0 == "." }.count
+        if exclamations >= 1, exclamations * 2 >= periods { return .excited }
+        if openLines * 2 >= lines.count, sentences.count <= lines.count + 1 { return .casual }
+        return .formal
+    }
+
     /// Applies the style's capitals and end punctuation to finished English text.
     /// `openEnd`: the text ends with a placeholder for a one-line snippet that reads like words ("…to 1 Main St").
     static func apply(_ text: String, style: WritingStyle, category: AppCategory, keep: Set<String>, openEnd: Bool = false) -> String {

@@ -226,6 +226,9 @@ public struct ShortcutMap: Codable, Hashable, Sendable {
 public enum HotkeyEvent: Equatable, Sendable {
     case pressed(ShortcutAction, KeyChord)
     case released(ShortcutAction, KeyChord)
+    /// A key that completes no chord went down while a push-to-talk chord was held (§2.3 other-key cancel: the
+    /// coordinator dismisses a dictation that started less than `DictationLimits.otherShortcutCancelWindow` ago).
+    case otherKey(during: ShortcutAction, KeyChord)
     /// Fn tapped twice within `DictationLimits.debounceWindow` (hands-free), or three times (Notetaker).
     case doubleTap
     case tripleTap

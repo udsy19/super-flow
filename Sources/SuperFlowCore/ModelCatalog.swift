@@ -1,7 +1,8 @@
 import Foundation
 
 /// The compiled-in model catalog (local-models.md §5.2, §9.1). SHA-256 values are the Hugging Face LFS ids, verified by
-/// downloading and hashing. URLs pin a revision so a re-upload can never change bytes under a fixed hash.
+/// downloading and hashing. Single files pin their bytes by hash; Core ML folders pin the repository commit
+/// (`revision`), so a re-upload can never change what is installed.
 public enum ModelCatalog {
     static let gib: Int64 = 1 << 30
 
@@ -14,7 +15,7 @@ public enum ModelCatalog {
     /// Default dictation ASR on Apple silicon: 25 European languages, ANE, precompiled Core ML.
     public static let parakeetV3 = ModelDescriptor(
         id: "parakeet-tdt-0.6b-v3", kind: .asr, name: "Parakeet TDT 0.6B v3", engine: "fluidaudio",
-        bytes: 470 * 1_000_000, repository: "FluidInference/parakeet-tdt-0.6b-v3-coreml", revision: "main",
+        bytes: 470 * 1_000_000, repository: "FluidInference/parakeet-tdt-0.6b-v3-coreml", revision: "7dd20fe6b1797d35f5e3307e8b1732d9a178edfe",
         licence: "CC-BY-4.0",
         attribution: "NVIDIA Parakeet TDT 0.6B v3, CC-BY-4.0; Core ML conversion by Fluid Inference (modified).",
         languages: ["bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu", "it", "lv", "lt", "mt", "pl", "pt", "ro",
@@ -84,13 +85,15 @@ public enum ModelCatalog {
 
     public static let diarization = ModelDescriptor(
         id: "speaker-diarization-community-1", kind: .diarization, name: "Speaker diarization (Community-1)", engine: "fluidaudio",
-        bytes: 22 * 1_000_000, repository: "FluidInference/speaker-diarization-coreml", revision: "main", licence: "CC-BY-4.0",
+        bytes: 22 * 1_000_000, repository: "FluidInference/speaker-diarization-coreml", revision: "7eab74f3463c736418d0eb10296261ae581146c9",
+        licence: "CC-BY-4.0",
         attribution: "pyannote Community-1 segmentation, WeSpeaker ResNet34-LM embedding and BUT Speech@FIT PLDA (CC-BY-4.0); "
             + "Core ML conversions by Fluid Inference (modified).", minRAM: 256 * 1_048_576)
 
     public static let localVQE = ModelDescriptor(
         id: "localvqe-1.3", kind: .echoCancel, name: "LocalVQE 1.3 (echo removal)", engine: "fluidaudio",
-        bytes: 19_600_000, repository: "FluidInference/LocalVQE", revision: "main", licence: "Apache-2.0",
+        bytes: 19_600_000, repository: "FluidInference/localvqe-coreml", revision: "4205430781c240397073d6f7bf676fb4c732fc12",
+        licence: "Apache-2.0",
         attribution: "LocalVQE by Fluid Inference (Apache-2.0).", minRAM: 128 * 1_048_576)
 
     public static let all: [ModelDescriptor] = [

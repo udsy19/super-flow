@@ -133,33 +133,3 @@ enum CommandIntent: Equatable {
         }
     }
 }
-
-/// Transform and Command Mode failures, worded as strings.md's `polish_*` notifications.
-public enum TransformError: LocalizedError, Equatable {
-    /// More than `DictationLimits.transformMaxWords` words selected.
-    case tooLong
-    case emptyResponse
-    case timedOut
-    /// The cleanup model is not downloaded or not loaded yet.
-    case modelNotReady
-    case failed
-
-    public var errorDescription: String? {
-        switch self {
-        case .tooLong: "Oops, too long to polish"
-        case .emptyResponse: "Transform returned no text"
-        case .timedOut: "Transform timed out"
-        case .modelNotReady: "Just a moment - Super Flow is getting ready..."
-        case .failed: "Transform failed. Please try again."
-        }
-    }
-
-    public var recoverySuggestion: String? {
-        switch self {
-        case .tooLong: "Try again with under \(DictationLimits.transformMaxWords) words"
-        case .emptyResponse: "Something went wrong. Please try again."
-        case .timedOut: "The request took too long. Please try again."
-        case .modelNotReady, .failed: nil
-        }
-    }
-}

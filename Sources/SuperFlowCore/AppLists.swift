@@ -19,9 +19,17 @@ public enum AppLists {
         "com.linear", "com.figma.Desktop", "com.apple.dt.Xcode", "com.jetbrains.intellij", "com.jetbrains.pycharm", "com.jetbrains.WebStorm",
         "com.sublimetext.4", "com.apple.TextEdit", "com.craft.craft", "com.apple.freeform",
     ]
-    /// AI coding editors and terminals; the AI chat apps of behaviour.md §6.2 are added by InsertionKit from strings.md.
+    /// AI coding editors and terminals, plus the native AI chat apps of behaviour.md §6.2.
     public static let ai: Set<String> = [
         "com.todesktop.230313mzl4w4u92", "com.exafunction.windsurf", "com.microsoft.VSCode", "dev.warp.Warp-Stable", "com.mitchellh.ghostty",
+        "com.openai.chat", "com.anthropic.claudefordesktop", "ai.perplexity.mac", "ai.elementlabs.lmstudio", "jan.ai.app",
+        "co.podzim.BoltGPT", "dev.zed.Zed",
+    ]
+    /// AI chat sites in a browser, matched like `hostCategories` (the host or any subdomain).
+    public static let aiChatHosts: [String] = [
+        "chatgpt.com", "chat.openai.com", "claude.ai", "gemini.google.com", "aistudio.google.com", "perplexity.ai",
+        "copilot.microsoft.com", "chat.deepseek.com", "grok.com", "chat.mistral.ai", "poe.com", "meta.ai",
+        "v0.dev", "v0.app", "bolt.new", "lovable.dev",
     ]
     public static let terminal: Set<String> = [
         "com.apple.Terminal", "com.googlecode.iterm2", "dev.warp.Warp-Stable", "com.mitchellh.ghostty", "net.kovidgoyal.kitty",
@@ -45,6 +53,7 @@ public enum AppLists {
 
     public static func category(bundleID: String, url: String? = nil) -> AppCategory {
         if browsers.contains(bundleID), let url, let host = URL(string: url)?.host?.lowercased() {
+            if aiChatHosts.contains(where: { host == $0 || host.hasSuffix("." + $0) }) { return .ai }
             if let match = hostCategories.first(where: { host == $0.suffix || host.hasSuffix("." + $0.suffix) }) { return match.category }
             return .other
         }

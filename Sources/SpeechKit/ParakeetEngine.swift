@@ -39,14 +39,14 @@ public actor ParakeetEngine {
         let minimum = ASRConstants.minimumRequiredSamples(forSampleRate: AudioClip.sampleRate) + AudioClip.sampleRate / 10
         if samples.count < minimum { samples += [Float](repeating: 0, count: minimum - samples.count) }
         var state = TdtDecoderState.make()
-        let hint = language.flatMap { Language(rawValue: SpeechLanguages.base($0)) }
+        let hint = language.flatMap { Language(rawValue: SupportedLanguages.base($0)) }
         let result = try await manager.transcribe(samples, decoderState: &state, language: hint)
         let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let timings = result.tokenTimings ?? []
         let start = clip.startTime + (timings.first?.startTime ?? 0)
         let end = clip.startTime + (timings.last?.endTime ?? clip.duration)
         let segments = text.isEmpty ? [] : [TranscriptSegment(start: start, end: max(start, end), text: text)]
-        return Transcript(text: text, language: language.map(SpeechLanguages.base) ?? "", confidence: Double(result.confidence),
+        return Transcript(text: text, language: language.map(SupportedLanguages.base) ?? "", confidence: Double(result.confidence),
                           segments: segments)
     }
 

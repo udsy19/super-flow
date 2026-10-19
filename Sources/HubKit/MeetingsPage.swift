@@ -4,55 +4,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 import SuperFlowCore
 
-// MARK: - Export (behaviour.md §20.7.5 template, §20.8 export)
-
-/// A meeting as Markdown: title, when, summary, key decisions, action items, follow-ups, the user's notes and the
-/// transcript by speaker. Public for the self-test.
-public enum MeetingMarkdown {
-    public static func render(_ meeting: Meeting, actionItems: [ActionItem]? = nil) -> String {
-        var out = "# \(meeting.title)\n\n"
-        var meta = [meeting.startedAt.formatted(date: .complete, time: .shortened)]
-        if meeting.endedAt != nil { meta.append(HubFormat.duration(meeting.duration)) }
-        if meeting.platform != .other { meta.append(HubFormat.platformName(meeting.platform)) }
-        out += meta.joined(separator: " · ") + "\n"
-        let people = meeting.participants.map(\.name)
-        if !people.isEmpty { out += "\nParticipants: \(people.joined(separator: ", "))\n" }
-
-        if let summary = meeting.summary {
-            if !summary.summary.isEmpty { out += "\n## Summary\n\n\(summary.summary.trimmingCharacters(in: .whitespacesAndNewlines))\n" }
-            if !summary.decisions.isEmpty { out += "\n## Key decisions\n\n" + summary.decisions.map { "- \($0)" }.joined(separator: "\n") + "\n" }
-            let items = actionItems ?? summary.actionItems
-            if !items.isEmpty { out += "\n## Action items\n\n" + items.map(checklistLine).joined(separator: "\n") + "\n" }
-            if !summary.followUps.isEmpty { out += "\n## Follow-ups\n\n" + summary.followUps.map { "- \($0)" }.joined(separator: "\n") + "\n" }
-        } else if let items = actionItems, !items.isEmpty {
-            out += "\n## Action items\n\n" + items.map(checklistLine).joined(separator: "\n") + "\n"
-        }
-        let notes = meeting.notes.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !notes.isEmpty { out += "\n## Notes\n\n\(notes)\n" }
-        let groups = TranscriptGroup.make(meeting)
-        if !groups.isEmpty {
-            out += "\n## Transcript\n\n" + groups.map { "**\($0.speaker)** (\(HubFormat.clock($0.start))): \($0.lines.joined(separator: " "))" }
-                .joined(separator: "\n\n") + "\n"
-        }
-        return out
-    }
-
-    public static func checklistLine(_ item: ActionItem) -> String {
-        var line = "- [\(item.isCompleted ? "x" : " ")] \(item.text)"
-        var extras: [String] = []
-        if let owner = item.owner, !owner.isEmpty { extras.append(owner) }
-        if let due = item.due { extras.append("due \(due.formatted(date: .abbreviated, time: .omitted))") }
-        if !extras.isEmpty { line += " (\(extras.joined(separator: ", ")))" }
-        return line
-    }
-
-    /// "2025-10-14 Product launch review.md", safe for the file system.
-    public static func fileName(_ meeting: Meeting) -> String {
-        let day = meeting.startedAt.formatted(.iso8601.year().month().day())
-        let title = meeting.title.components(separatedBy: CharacterSet(charactersIn: "/:\\?%*|\"<>")).joined(separator: "-")
-        return "\(day) \(title.prefix(80)).md"
-    }
-}
+// MARK: - Transcript blocks (behaviour.md §20.7.5; the export itself is `MeetingExport` in Core)
 
 /// Consecutive final segments by one speaker.
 public struct TranscriptGroup: Identifiable, Equatable, Sendable {
@@ -296,17 +248,17 @@ struct MeetingHeader: View {
     private var actionItems: [ActionItem] { MeetingActionItems.items(for: meeting, store: store.actionItems) }
 
     private func copyMarkdown() {
-        Clipboard.copy(MeetingMarkdown.render(meeting, actionItems: actionItems))
+        Clipboard.copy(MeetingExport.text(meeting, format: .markdown, actionItems: actionItems))
         state.showToast("Copied as Markdown")
     }
 
     private func export() {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
-        panel.nameFieldStringValue = MeetingMarkdown.fileName(meeting)
+        panel.nameFieldStringValue = MeetingExport.fileName(for: meeting, format: .markdown)
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
-            try MeetingMarkdown.render(meeting, actionItems: actionItems).write(to: url, atomically: true, encoding: .utf8)
+            try MeetingExport.write(meeting, format: .markdown, to: url, actionItems: actionItems)
             state.showToast("Saved \(url.lastPathComponent)")
         } catch {
             state.showToast("Couldn't save the file.", isError: true)

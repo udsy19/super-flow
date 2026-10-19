@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import FlowStore
 import SuperFlowCore
@@ -8,6 +9,7 @@ func registerFlowStoreTests() {
     SelfTest.cases.append(("FlowStore.dictionaryAndSnippets", { MainActor.assumeIsolated { storeDictionary() } }))
     SelfTest.cases.append(("FlowStore.meetings", { MainActor.assumeIsolated { storeMeetings() } }))
     SelfTest.cases.append(("FlowStore.damagedRecovery", { MainActor.assumeIsolated { storeRecovery() } }))
+    SelfTest.cases.append(("FlowStore.notes", { MainActor.assumeIsolated { storeNotes() } }))
 }
 
 @MainActor private func freshStore() -> SQLiteStore {
@@ -86,6 +88,34 @@ func registerFlowStoreTests() {
     try? store.save(sampleMeeting(endedAt: Date(timeIntervalSince1970: 1_700_000_000)))
     check((try? store.pruneMeetings(before: Date(timeIntervalSince1970: 1_750_000_000))) == 1 && store.meetings(matching: "", limit: 10, offset: 0).isEmpty,
           "transcript retention prunes whole meetings")
+}
+
+@MainActor private func storeNotes() {
+    let store = freshStore()
+    var changes: [StoreChange] = []
+    let subscription = store.changes.sink { changes.append($0) }
+    defer { subscription.cancel() }
+    let older = ScratchNote(text: "Groceries\n\nmilk", createdAt: Date(timeIntervalSince1970: 1), updatedAt: Date(timeIntervalSince1970: 1))
+    let newer = ScratchNote(text: "Plan", createdAt: Date(timeIntervalSince1970: 2), updatedAt: Date(timeIntervalSince1970: 5))
+    try? store.save(older)
+    try? store.save(newer)
+    check(store.notes.map(\.id) == [newer.id, older.id] && store.notes.last == older, "notes round trip, newest edit first")
+    check(changes == [.notes, .notes], "the change feed reports notes")
+    try? store.deleteNote(newer.id)
+    check(store.notes.map(\.id) == [older.id], "delete")
+
+    // The notes.json of pre-1.0 builds is imported once and parked in Backup.
+    let file = SuperFlowPaths.support.appendingPathComponent("notes-\(UUID().uuidString).json")
+    let legacy = ScratchNote(text: "Legacy note", createdAt: Date(timeIntervalSince1970: 100), updatedAt: Date(timeIntervalSince1970: 200))
+    let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+    try? encoder.encode([legacy]).write(to: file)
+    store.importNotesFile(at: file)
+    check(store.notes.contains { $0.id == legacy.id && $0.text == "Legacy note" && $0.updatedAt == legacy.updatedAt }, "notes.json imported")
+    check(!FileManager.default.fileExists(atPath: file.path)
+              && ((try? FileManager.default.contentsOfDirectory(atPath: SuperFlowPaths.backup.path)) ?? []).contains { $0.hasSuffix(file.lastPathComponent) },
+          "the file is parked in Backup")
+    store.importNotesFile(at: file)
+    check(store.notes.filter { $0.id == legacy.id }.count == 1, "importing again is a no-op")
 }
 
 @MainActor private func storeRecovery() {

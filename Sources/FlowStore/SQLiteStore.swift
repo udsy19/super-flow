@@ -6,6 +6,7 @@ import SuperFlowCore
 public enum FlowStoreModule {
     @MainActor public static func install() {
         let store = SQLiteStore.open()
+        store.importNotesFile(at: SuperFlowPaths.support.appendingPathComponent("notes.json"))
         Services.history = store
         Services.meetings = store
     }
@@ -166,6 +167,40 @@ public final class SQLiteStore: HistoryStoring, MeetingStoring {
 
     public func deleteTransform(_ id: UUID) throws {
         try db.run("DELETE FROM transforms WHERE id = ?", [.text(id.uuidString)])
+    }
+
+    // MARK: - Notes
+
+    public var notes: [ScratchNote] {
+        ((try? db.query("SELECT json FROM notes ORDER BY updated_at DESC") { JSON.decode(ScratchNote.self, $0.text(0)) }) ?? []).compactMap { $0 }
+    }
+
+    public func save(_ note: ScratchNote) throws {
+        try db.run("INSERT OR REPLACE INTO notes (id, created_at, updated_at, json) VALUES (?, ?, ?, ?)",
+                   [.text(note.id.uuidString), .real(note.createdAt.timeIntervalSince1970), .real(note.updatedAt.timeIntervalSince1970),
+                    .text(try JSON.encode(note))])
+        changeSubject.send(.notes)
+    }
+
+    public func deleteNote(_ id: UUID) throws {
+        try db.run("DELETE FROM notes WHERE id = ?", [.text(id.uuidString)])
+        changeSubject.send(.notes)
+    }
+
+    /// Moves the notes an earlier version kept in `notes.json` (ISO-8601 dates) into the table, then parks the file
+    /// in `SuperFlowPaths.backup`. Nothing happens when the file is absent; an unreadable file is parked unimported.
+    public func importNotesFile(at url: URL) {
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        if let data = try? Data(contentsOf: url), let notes = try? decoder.decode([ScratchNote].self, from: data) {
+            for note in notes { try? save(note) }
+            Log.store.info("Imported \(notes.count) note(s) from notes.json")
+        } else {
+            Log.store.error("notes.json is unreadable; parked in Backup without importing")
+        }
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        try? FileManager.default.moveItem(at: url, to: SuperFlowPaths.backup.appendingPathComponent("\(stamp)-notes.json"))
     }
 
     // MARK: - Meetings

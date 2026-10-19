@@ -104,6 +104,7 @@ private func meetingRMS(_ samples: ArraySlice<Float>) -> Float {
         }
     }
     var level: AnyPublisher<Float, Never> { Just(0).eraseToAnyPublisher() }
+    var deviceChanges: AnyPublisher<[AudioDevice], Never> { Just(devices).eraseToAnyPublisher() }
 
     func startMicrophone() async throws {
         if let micError { throw micError }
@@ -172,13 +173,16 @@ private func meetingRMS(_ samples: ArraySlice<Float>) -> Float {
 @MainActor private final class MeetingFakeStore: MeetingStoring {
     var rows: [UUID: Meeting] = [:]
     var items: [UUID: ActionItem] = [:]
+    let subject = PassthroughSubject<StoreChange, Never>()
+    var changes: AnyPublisher<StoreChange, Never> { subject.eraseToAnyPublisher() }
 
     func meeting(_ id: UUID) -> Meeting? { rows[id] }
     func meetings(matching query: String, limit: Int, offset: Int) -> [Meeting] { rows.values.sorted { $0.startedAt > $1.startedAt } }
-    func save(_ meeting: Meeting) throws { rows[meeting.id] = meeting }
+    func save(_ meeting: Meeting) throws { rows[meeting.id] = meeting; subject.send(.meetings) }
     func deleteMeeting(_ id: UUID) throws {
         guard rows.removeValue(forKey: id) != nil else { throw StoreError.notFound(id) }
         try? FileManager.default.removeItem(at: SuperFlowPaths.meetingAudio.appendingPathComponent(id.uuidString))
+        subject.send(.meetings)
     }
     func meetingsWithAudio(before cutoff: Date) -> [Meeting] {
         rows.values.filter { $0.hasAudio && ($0.endedAt ?? .distantFuture) < cutoff }
@@ -192,10 +196,15 @@ private func meetingRMS(_ samples: ArraySlice<Float>) -> Float {
 @MainActor private final class MeetingFakeFlowBar: FlowBarPresenting {
     var state: FlowBarState = .resting
     var states: [FlowBarState] = []
+    var phases: [MeetingBarPhase?] = []
     var prompts: [MeetingPrompt] = []
     var answer: ((MeetingPromptAnswer) -> Void)?
 
     func setState(_ state: FlowBarState) { self.state = state; states.append(state) }
+    func setMeetingPhase(_ phase: MeetingBarPhase?) {
+        phases.append(phase)
+        state = phase.map { .meeting($0) } ?? .resting
+    }
     func setLevel(_ level: Float) {}
     func setEdge(_ edge: FlowBarEdge) {}
     func setRestingVisible(_ visible: Bool) {}
@@ -557,7 +566,7 @@ private func meetingTemporaryFolder() -> URL {
           "live transcript in order with You/Them channels: \(live.items.map(\.text))")
     if let first = live.items.first { check(abs(first.start - 0.3) < 0.05, "timestamps relative to the recording start (\(first.start))") }
     check(fakes.speech.priorities.allSatisfy { $0 == .meeting }, "meeting transcription runs at meeting priority")
-    check(fakes.flowBar.states.contains(.meeting(.recording(wordCount: MeetingFixture.words))), "the bar shows the live word count")
+    check(fakes.flowBar.phases.contains(.recording(wordCount: MeetingFixture.words, startedAt: meeting.startedAt)), "the bar shows the live word count")
     meetingWaitUntil(2) { fakes.store.rows[meeting.id]?.segments.count == 5 }
     check(fakes.store.rows[meeting.id]?.segments.count == 5, "transcript saved while recording")
 
@@ -574,7 +583,8 @@ private func meetingTemporaryFolder() -> URL {
 
     guard let saved = fakes.store.rows[meeting.id] else { check(false, "meeting kept"); return }
     check(saved.endedAt != nil && saved.segments.count == 5, "ended with the full transcript")
-    check(saved.notes.hasPrefix("Ask about Android.\n[00:") && saved.notes.hasSuffix("] Pricing"), "notes kept, marker added: \(saved.notes)")
+    check(saved.notes == "Ask about Android." && saved.markers.map(\.label) == ["Pricing"] && (saved.markers.first?.time ?? -1) >= 0,
+          "notes kept, marker added: \(saved.markers)")
     check(saved.speakers.map(\.label) == ["You", "Speaker 1", "Speaker 2"], "You + two diarized voices: \(saved.speakers.map(\.label))")
     let labels = speakerLines(saved)
     check(labels == ["You", "Speaker 1", "Speaker 2", "You", "Speaker 1"], "segments labelled by voice: \(labels)")

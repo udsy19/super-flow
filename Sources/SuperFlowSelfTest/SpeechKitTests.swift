@@ -170,10 +170,10 @@ private func testModel(_ id: String, data: Data, kind: ModelKind = .llm, sha: St
 // MARK: - Pure logic
 
 private func speechLanguages() {
-    check(SpeechLanguages.base("en-US") == "en" && SpeechLanguages.base("pt_BR") == "pt" && SpeechLanguages.base("FR") == "fr", "base codes")
+    check(SupportedLanguages.base("en-US") == "en" && SupportedLanguages.base("pt_BR") == "pt" && SupportedLanguages.base("FR") == "fr", "base codes")
     check(SpeechLanguages.requested(selected: ["en-US", "en", "fr"], autoDetect: false) == ["en", "fr"], "selected languages, de-duplicated")
     check(SpeechLanguages.requested(selected: ["en"], autoDetect: true).isEmpty, "auto-detect asks for everything")
-    check(SpeechLanguages.parakeetCovers(["en", "de", "uk"]) && !SpeechLanguages.parakeetCovers(["en", "hi"]) && !SpeechLanguages.parakeetCovers([]),
+    check(SupportedLanguages.parakeetCovers(["en", "de", "uk"]) && !SupportedLanguages.parakeetCovers(["en", "hi"]) && !SupportedLanguages.parakeetCovers([]),
           "Parakeet covers its 25 languages only, never auto-detect")
     check(TextLanguage.identify("Bonjour, je voudrais réserver une table pour ce soir.", among: ["en", "fr"]).language == "fr", "French text")
     let english = TextLanguage.identify("Please send the quarterly report before Thursday.", among: ["en"])
@@ -492,11 +492,11 @@ private func speechGate() {
 
 // MARK: - Real models (dev folders only)
 
-private var devFolders: [URL] {
+var devFolders: [URL] {
     (ProcessInfo.processInfo.environment["SUPERFLOW_DEV_MODELS"] ?? "").split(separator: ":").map { URL(fileURLWithPath: String($0)) }
 }
 
-private func devModel(_ names: String...) -> URL? {
+func devModel(_ names: String...) -> URL? {
     for folder in devFolders {
         for name in names where FileManager.default.fileExists(atPath: folder.appendingPathComponent(name).path) {
             return folder.appendingPathComponent(name)
@@ -506,12 +506,14 @@ private func devModel(_ names: String...) -> URL? {
 }
 
 /// A Models folder that links whatever dev models exist, and a manager over it (no network, nothing queued).
-@MainActor private func devManager() -> ModelManager? {
+@MainActor func devManager() -> ModelManager? {
     let links: [(ModelDescriptor, URL?)] = [
         (ModelCatalog.parakeetV3, devModel("parakeet-tdt-0.6b-v3")),
         (ModelCatalog.whisperBase, devModel(ModelCatalog.whisperBase.fileName)),
         (ModelCatalog.sileroVAD, devModel(ModelCatalog.sileroVAD.fileName)),
         (ModelCatalog.diarization, devModel("speaker-diarization", ModelCatalog.diarization.id)),
+        (ModelCatalog.qwen35_4B, devModel(ModelCatalog.qwen35_4B.fileName)),
+        (ModelCatalog.qwen35_2B, devModel(ModelCatalog.qwen35_2B.fileName)),
     ]
     guard links.contains(where: { $0.1 != nil }) else { return nil }
     let root = SuperFlowPaths.support.appendingPathComponent("dev-models-\(UUID().uuidString)", isDirectory: true)
@@ -524,7 +526,7 @@ private func devModel(_ names: String...) -> URL? {
 }
 
 /// Speech synthesised to a 16 kHz WAV with `say -o` (written to a file, never played), with silence around it.
-private func spoken(_ text: String, voice: String, padding: TimeInterval = 0.5) -> [Float]? {
+func spoken(_ text: String, voice: String, padding: TimeInterval = 0.5) -> [Float]? {
     let url = SuperFlowPaths.support.appendingPathComponent("say-\(UUID().uuidString).wav")
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/say")

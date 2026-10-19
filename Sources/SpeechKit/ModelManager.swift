@@ -86,7 +86,7 @@ public final class ModelManager: ModelManaging {
         var plan = AutoDownloadPolicy.order(for: preset)
         if bundledCopy(of: ModelCatalog.sileroVAD) == nil { plan.insert(ModelCatalog.sileroVAD, at: 0) }
         let languages = SpeechLanguages.requested(selected: Defaults[.selectedLanguages], autoDetect: Defaults[.autoDetectLanguage])
-        if preset.dictation.contains(where: { $0.engine == "fluidaudio" && $0.kind == .asr }), !SpeechLanguages.parakeetCovers(languages),
+        if preset.dictation.contains(where: { $0.engine == "fluidaudio" && $0.kind == .asr }), !SupportedLanguages.parakeetCovers(languages),
            let fallback = ModelCatalog.descriptor(Defaults[.fallbackASRModelID]) {
             let lastASR = plan.lastIndex { $0.kind == .asr } ?? -1
             plan.insert(fallback, at: lastASR + 1)

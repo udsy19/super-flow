@@ -15,43 +15,58 @@ public enum CleanupKitModule {
 public final class TextCleaner: TextCleaning {
     static let shared = TextCleaner()
 
-    private var model: CleanupLanguageModel?
-    private var modelID: String
-    /// Measured speeds in tokens per second (moving averages), for skipping the LLM when it cannot finish in budget.
+    private struct Loaded { var id: String; var model: CleanupLanguageModel }
+    /// The engine of each role; both roles share one engine when their settings name the same model.
+    private var engines: [LanguageModelRole: Loaded] = [:]
+    /// Measured speeds of the cleanup model in tokens per second (moving averages), for skipping the LLM when it
+    /// cannot finish in budget.
     private var prefillRate: Double?
     private var decodeRate: Double?
-    /// Wall-time cap for Transforms, Command Mode and MeetingKit's notes chunks (longer outputs than cleanup,
-    /// local-models.md §3.4); it stops runaway generation, it is not a target.
+    /// Wall-time cap for Transforms and Command Mode (longer outputs than cleanup, local-models.md §3.4); it stops
+    /// runaway generation, it is not a target.
     static let transformBudget: TimeInterval = 60
+    /// Wall-time cap for `generate` (meeting notes over a chunk of transcript on the notes model).
+    static let generateBudget: TimeInterval = 180
 
-    /// `model` is an already-loaded model (the self-test passes its own); the app loads one with `prepare(modelID:)`.
+    /// `model` is an already-loaded cleanup model (the self-test passes its own); the app loads models with
+    /// `prepare(modelID:role:)`.
     public init(model: CleanupLanguageModel? = nil, modelID: String = ModelCatalog.qwen35_2B.id) {
-        self.model = model
-        self.modelID = modelID
+        if let model { engines[.cleanup] = Loaded(id: modelID, model: model) }
     }
 
-    public var isModelReady: Bool { model != nil }
+    private var model: CleanupLanguageModel? { engines[.cleanup]?.model }
+    private var modelID: String { engines[.cleanup]?.id ?? ModelCatalog.qwen35_2B.id }
 
-    public func prepare(modelID: String) async throws {
-        guard let url = Services.models.location(of: modelID) else { throw SpeechError.modelNotInstalled(modelID) }
-        let engine = LlamaEngine(modelURL: url)
-        try await engine.load()
-        let previous = model
-        model = engine
-        self.modelID = modelID
-        prefillRate = nil
-        decodeRate = nil
-        await previous?.unload()
-        // Compiles the Metal pipelines and caches the most common prefix (local-models.md §4 "Warm Metal pipelines").
-        try? await engine.warm(prefix: Prompts.cleanupPrefix(style: .formal, level: .light, category: .other))
-        Log.cleanup.info("Loaded \(modelID, privacy: .public)")
+    public func isModelReady(for role: LanguageModelRole) -> Bool { engines[role] != nil }
+
+    public func prepare(modelID: String, role: LanguageModelRole) async throws {
+        if engines[role]?.id == modelID { return }
+        let previous = engines[role]
+        if let shared = engines.values.first(where: { $0.id == modelID }) {
+            engines[role] = shared
+        } else {
+            guard let url = Services.models.location(of: modelID) else { throw SpeechError.modelNotInstalled(modelID) }
+            let engine = LlamaEngine(modelURL: url)
+            try await engine.load()
+            engines[role] = Loaded(id: modelID, model: engine)
+            if role == .cleanup {
+                prefillRate = nil
+                decodeRate = nil
+                // Compiles the Metal pipelines and caches the most common prefix (local-models.md §4 "Warm Metal pipelines").
+                try? await engine.warm(prefix: Prompts.cleanupPrefix(style: .formal, level: .light, category: .other))
+            }
+        }
+        Log.cleanup.info("Loaded \(modelID, privacy: .public) for \(role.rawValue, privacy: .public)")
+        if let previous, !isInUse(previous) { await previous.model.unload() }
     }
 
-    public func unload() {
-        let model = model
-        self.model = nil
-        Task { await model?.unload() }
+    public func unload(role: LanguageModelRole) {
+        guard let previous = engines.removeValue(forKey: role) else { return }
+        if role == .cleanup { prefillRate = nil; decodeRate = nil }
+        if !isInUse(previous) { Task { await previous.model.unload() } }
     }
+
+    private func isInUse(_ loaded: Loaded) -> Bool { engines.values.contains { $0.model === loaded.model } }
 
     public func warm(style: WritingStyle, level: CleanupLevel, category: AppCategory) async {
         guard let model, level != .none else { return }
@@ -60,13 +75,15 @@ public final class TextCleaner: TextCleaning {
     }
 
     public func clean(_ input: CleanupInput, budget: TimeInterval) async -> CleanupOutput {
+        var input = input
+        if input.detectStyle, let detected = Style.detect(input.context.textBefore) { input.style = detected }
         let raw = input.transcript.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty else { return skipped(CleanupOutput(text: "", skipReason: .emptyTranscript)) }
         let pass = RulePass(input, pressEnterEnabled: Defaults[.pressEnterCommandEnabled])
         let prepared = pass.prepare(raw)
         let rulesOnly = { (reason: CleanupSkipReason) in
             self.skipped(CleanupOutput(text: pass.finish(prepared.text, prepared, context: input.context), skipReason: reason,
-                                       actions: prepared.actions))
+                                       actions: prepared.actions, expandedSnippets: prepared.snippets))
         }
         if prepared.text.isEmpty { return rulesOnly(.insufficientInput) }
         if pass.isVerbatim || Defaults[.cleanupModelID] == nil { return rulesOnly(.clientDisabled) }
@@ -95,7 +112,8 @@ public final class TextCleaner: TextCleaning {
             Log.cleanup.info("LLM output rejected: \(rejection.detail, privacy: .private)")
             return rulesOnly(rejection.reason)
         case .success(let text):
-            return CleanupOutput(text: pass.finish(text, prepared, context: input.context), actions: prepared.actions)
+            return CleanupOutput(text: pass.finish(text, prepared, context: input.context), actions: prepared.actions,
+                                 expandedSnippets: prepared.snippets)
         }
     }
 
@@ -121,6 +139,27 @@ public final class TextCleaner: TextCleaning {
         measure(result)
         if result.timedOut { throw TransformError.timedOut }
         return try Guardrails.checkTransform(result.text, input: selection, intent: intent).get()
+    }
+
+    public func generate(_ input: String, instruction: String, role: LanguageModelRole) async throws -> String {
+        let instruction = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !instruction.isEmpty else { throw TransformError.failed }
+        guard let loaded = engines[role] else { throw TransformError.modelNotReady }
+        let inputTokens = Prompts.estimatedTokens(input + instruction)
+        let request = LLMRequest(prefix: Prompts.transformPrefix(.custom, hasText: !input.isEmpty),
+                                 turn: Prompts.transformTurn(input, instruction: instruction, thinkBlock: Prompts.usesThinkBlock(modelID: loaded.id)),
+                                 maxTokens: Int(Double(inputTokens) * 1.5) + 256,
+                                 deadline: Date().addingTimeInterval(Self.generateBudget))
+        let result: LLMResult
+        do { result = try await loaded.model.complete(request) } catch {
+            Log.cleanup.error("Generation failed: \(error.localizedDescription, privacy: .public)")
+            throw TransformError.failed
+        }
+        if role == .cleanup { measure(result) }
+        if result.timedOut { throw TransformError.timedOut }
+        let text = Guardrails.strippedThinking(result.text)
+        guard !text.isEmpty else { throw TransformError.emptyResponse }
+        return text
     }
 
     // MARK: Internals

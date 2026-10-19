@@ -122,7 +122,5 @@ public enum HubFormat {
 
     // MARK: Languages
 
-    public static func languageName(_ code: String) -> String {
-        Locale.current.localizedString(forLanguageCode: code)?.localizedCapitalized ?? code
-    }
+    public static func languageName(_ code: String) -> String { SupportedLanguages.name(code) }
 }

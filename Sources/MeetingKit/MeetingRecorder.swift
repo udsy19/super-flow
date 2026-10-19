@@ -30,8 +30,7 @@ public final class MeetingRecorder: MeetingRecording {
     }
 
     /// Default titles that the generated title may replace.
-    nonisolated static let untitledNote = "Untitled note"
-    nonisolated static let untitledTitles: Set<String> = [untitledNote, "Untitled meeting"]
+    nonisolated static let untitledTitles: Set<String> = [MeetingExport.untitled, "Untitled meeting"]
 
     /// Seconds between saves of the live transcript (a crash loses at most this much text; the audio is never lost).
     public var persistInterval: TimeInterval = 5
@@ -68,13 +67,14 @@ public final class MeetingRecorder: MeetingRecording {
         let previous = state
         setState(.starting)
         let event = detected?.calendarEvent
-        let meeting = Meeting(title: event?.title ?? detected?.title ?? Self.untitledNote, platform: detected?.platform ?? .other,
+        let meeting = Meeting(title: event?.title ?? detected?.title ?? MeetingExport.untitled, platform: detected?.platform ?? .other,
                               calendarEventID: event?.id, participants: event?.attendees ?? [])
         let session = RecordingSession(meeting: meeting, detectedID: detected?.id, folder: SuperFlowPaths.meetingAudio(meeting.id))
         session.vocabulary = vocabulary(for: meeting)
         self.session = session
         Task { await Self.prepareSpeechEngine() }
-        Services.flowBar?.setState(.meeting(.pending))
+        Task { await Self.prepareNotesModel() }
+        Services.flowBar?.setMeetingPhase(.pending)
 
         // Subscribe before capture starts so the first frames are kept.
         let frames = Services.audio.frames
@@ -100,7 +100,7 @@ public final class MeetingRecorder: MeetingRecording {
         do { try Services.meetings.save(meeting) } catch { return try abandon(session, restoring: previous, error: error) }
 
         Services.models?.setUserBusy(true)
-        Services.flowBar?.setState(.meeting(.recording(wordCount: 0)))
+        Services.flowBar?.setMeetingPhase(.recording(wordCount: 0, startedAt: meeting.startedAt))
         if Defaults[.notetakerOpenWindowOnRecord] { Services.hub?.showNotepad(for: meeting.id) }
         let limit = TimeInterval(Defaults[.notetakerMaxRecordingLength])
         session.limitTask = Task { [weak self] in
@@ -119,7 +119,7 @@ public final class MeetingRecorder: MeetingRecording {
         releaseCapture(session)
         self.session = nil
         try? FileManager.default.removeItem(at: session.folder)
-        Services.flowBar?.setState(.resting)
+        Services.flowBar?.setMeetingPhase(nil)
         setState(previous)
         throw error
     }
@@ -154,7 +154,7 @@ public final class MeetingRecorder: MeetingRecording {
             session.wordCount += Dictation.countWords(segment.text)
             self.publish(segment)
             if self.session === session, case .recording = self.state {
-                Services.flowBar?.setState(.meeting(.recording(wordCount: session.wordCount)))
+                Services.flowBar?.setMeetingPhase(.recording(wordCount: session.wordCount, startedAt: session.meeting.startedAt))
             }
             self.schedulePersist(session)
             self.scheduleRollingMap(session)
@@ -224,7 +224,6 @@ public final class MeetingRecorder: MeetingRecording {
 
     // MARK: Notes and markers
 
-    /// Appends the user's text to the meeting's notes.
     public func appendNote(_ text: String) {
         guard let id = session?.meeting.id else { return }
         update(id) { row in
@@ -233,11 +232,10 @@ public final class MeetingRecorder: MeetingRecording {
         }
     }
 
-    /// Adds a marker at the current moment of the recording: a "[mm:ss] label" line in the notes.
     public func addMarker(_ label: String) {
         guard let meeting = session?.meeting else { return }
-        let stamp = "[\(TranscriptChunker.timestamp(Date().timeIntervalSince(meeting.startedAt)))]"
-        appendNote(label.isEmpty ? stamp : stamp + " " + label)
+        let marker = MeetingMarker(time: Date().timeIntervalSince(meeting.startedAt), label: label.trimmingCharacters(in: .whitespacesAndNewlines))
+        update(meeting.id) { $0.markers.append(marker) }
     }
 
     // MARK: Stop and discard
@@ -245,7 +243,7 @@ public final class MeetingRecorder: MeetingRecording {
     public func stop() async {
         guard let session, case .recording(let id) = state else { return }
         setState(.stopping(meetingID: id))
-        Services.flowBar?.setState(.meeting(.stopping))
+        Services.flowBar?.setMeetingPhase(.stopping)
         session.limitTask?.cancel()
         releaseCapture(session)
         for (channel, recorder) in session.channels {
@@ -256,7 +254,7 @@ public final class MeetingRecorder: MeetingRecording {
         persist(session)
         self.session = nil
         Services.models?.setUserBusy(false)
-        Services.flowBar?.setState(.resting)
+        Services.flowBar?.setMeetingPhase(nil)
         Log.meetings.info("Stopped meeting \(id, privacy: .public)")
         setState(.processing(meetingID: id, stage: Stage.processingAudio))
         processing[id] = Task { [weak self] in await self?.process(id, folder: session.folder, live: session) }
@@ -273,7 +271,7 @@ public final class MeetingRecorder: MeetingRecording {
             session.persistTask?.cancel()
             self.session = nil
             Services.models?.setUserBusy(false)
-            Services.flowBar?.setState(.resting)
+            Services.flowBar?.setMeetingPhase(nil)
             delete(session.meeting.id)
         } else if case .processing(let id, _) = state {
             processing[id]?.cancel()
@@ -311,7 +309,10 @@ public final class MeetingRecorder: MeetingRecording {
     private func process(_ id: UUID, folder: URL, live: RecordingSession?) async {
         defer {
             processing[id] = nil
-            if session == nil, processing.isEmpty { setState(.idle) }
+            if session == nil, processing.isEmpty {
+                setState(.idle)
+                if !Defaults[.keepModelsInMemory] { Services.cleanup?.unload(role: .notes) }
+            }
         }
         stage(id, Stage.processingAudio)
         let system = await Task.detached(priority: .utility) { ChunkedTrackWriter.read(folder: folder, channel: .system) }.value
@@ -376,10 +377,21 @@ public final class MeetingRecorder: MeetingRecording {
         }
     }
 
+    /// Loads the notes model (`Defaults[.notesModelID]`, local-models.md §8.6) when it is installed, so the rolling map
+    /// can run during the meeting and the summary follows seconds after it ends.
+    private static func prepareNotesModel() async {
+        guard let cleanup = Services.cleanup, !cleanup.isModelReady(for: .notes),
+              Services.models?.state(of: Defaults[.notesModelID]) == .installed else { return }
+        do { try await cleanup.prepare(modelID: Defaults[.notesModelID], role: .notes) } catch {
+            Log.meetings.error("No notes model for the meeting: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
     /// After a crash: transcribes what was recorded after the last saved segment of each channel.
     private func transcribeTail(of id: UUID, folder: URL) async {
         guard let meeting = Services.meetings.meeting(id) else { return }
         await Self.prepareSpeechEngine()
+        await Self.prepareNotesModel()
         let vocabulary = vocabulary(for: meeting)
         var added: [TranscriptSegment] = []
         for channel in AudioChannel.allCases {

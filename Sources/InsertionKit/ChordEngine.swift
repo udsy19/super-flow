@@ -26,7 +26,8 @@ public struct ChordDecision: Equatable, Sendable {
 ///   reports `.doubleTap` (when `doubleTapFnForHandsFree`), the third press of any push-to-talk chord `.tripleTap`;
 ///   those presses report nothing on release. Settings gates (triple-tap off, a locked session) are the
 ///   coordinator's.
-/// - A single-key `.dismiss` chord (Esc) also fires while other keys are held (§3.3.5).
+/// - A single-key `.dismiss` chord (Esc) also fires while other keys are held (§3.3.5). Any other key that completes
+///   no chord while a chord is held reports `.otherKey` once (the other-key cancel of §2.3).
 /// - Only the key that completes a chord is swallowed, only when it is not a modifier, the chord has a modifier or a
 ///   mouse button, and the action is not `.dismiss`; its repeats and its release are swallowed with it. Modifiers,
 ///   Esc and keys that complete no chord always reach the app. While the recorder is open, non-modifier keys go to
@@ -115,6 +116,9 @@ public struct ChordEngine: Sendable {
         let chord = KeyChord(Set(held.keys))
 
         guard let action = map.bindings[chord] else {
+            if let current = active, current.clean, held.count > 1, map.bindings[KeyChord(code)] != .dismiss {
+                out.events.append(.otherKey(during: current.action, current.chord))
+            }
             active?.clean = false
             endTapSequence()
             if held.count > 1, map.bindings[KeyChord(code)] == .dismiss {

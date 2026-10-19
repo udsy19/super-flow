@@ -97,6 +97,30 @@ public enum Permissions {
     }
 }
 
+/// What macOS does when the Fn/Globe key is pressed on its own (System Settings › Keyboard › "Press 🌐 key to").
+/// A Fn shortcut still works whatever this says; "Start Dictation" is the one that collides (Apple's dictation pops
+/// up on a double press), so the app points it out once.
+public enum GlobeKey {
+    public enum Usage: Int, Sendable {
+        case doNothing = 0, changeInputSource = 1, showEmoji = 2, startDictation = 3
+    }
+
+    static let domain = "com.apple.HIToolbox"
+    static let key = "AppleFnUsageType"
+
+    /// The setting as macOS stores it (`defaults read com.apple.HIToolbox AppleFnUsageType`); nil when unset (the
+    /// system default, which is "Change Input Source" with more than one input source and "Show Emoji" otherwise) or unknown.
+    public static var usage: Usage? {
+        guard let raw = UserDefaults(suiteName: domain)?.object(forKey: key) as? Int else { return nil }
+        return Usage(rawValue: raw)
+    }
+
+    /// Whether a chord made of Fn alone would also trigger Apple's dictation on a double press.
+    public static func collidesWithAppleDictation(_ map: ShortcutMap) -> Bool {
+        usage == .startDictation && map.bindings.keys.contains(KeyChord(KeyChord.fn))
+    }
+}
+
 /// The Mac this runs on, for presets (local-models.md §9.2).
 public enum Machine {
     public static var isAppleSilicon: Bool {

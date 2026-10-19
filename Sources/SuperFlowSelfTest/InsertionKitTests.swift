@@ -73,7 +73,10 @@ private func insertionFnGestures() {
     keys = Keys()
     _ = keys.down(fn, 50)
     let delete = keys.down(UInt16(kVK_Delete), 50.05)
-    check(delete.events.isEmpty && !delete.swallow, "Fn+Delete is no chord: forward delete reaches the app")
+    check(delete.events == [.otherKey(during: .pushToTalk, fnChord)] && !delete.swallow,
+          "Fn+Delete is no chord: forward delete reaches the app and the other key is reported once")
+    check(keys.down(UInt16(kVK_ANSI_A), 50.06).events.isEmpty, "a second other key is not reported again")
+    _ = keys.up(UInt16(kVK_ANSI_A), 50.07)
     _ = keys.up(UInt16(kVK_Delete), 50.08)
     _ = keys.up(fn, 50.1)
     check(keys.down(fn, 50.3).events == [.pressed(.pushToTalk, fnChord)], "a press with another key in it is not a tap")
@@ -343,15 +346,15 @@ private func insertionKeyboardLayout() {
 }
 
 private func insertionAppCategories() {
-    check(AppClassifier.category(bundleID: "com.openai.chat", url: nil) == .ai && AppClassifier.category(bundleID: "com.anthropic.claudefordesktop", url: nil) == .ai,
+    check(AppLists.category(bundleID: "com.openai.chat", url: nil) == .ai && AppLists.category(bundleID: "com.anthropic.claudefordesktop", url: nil) == .ai,
           "native AI chat apps")
-    check(AppClassifier.category(bundleID: "com.apple.Safari", url: "https://claude.ai/new") == .ai, "AI chat site")
-    check(AppClassifier.category(bundleID: "com.google.Chrome", url: "https://www.perplexity.ai/search") == .ai, "subdomain of an AI chat site")
-    check(AppClassifier.category(bundleID: "com.google.Chrome", url: "https://notclaude.ai/") == .other, "host suffixes match whole labels")
-    check(AppClassifier.category(bundleID: "com.google.Chrome", url: "https://mail.google.com/mail/u/0/") == .email, "Core's hosts still apply")
-    check(AppClassifier.category(bundleID: "com.tinyspeck.slackmacgap", url: nil) == .work && AppClassifier.category(bundleID: "com.unknown", url: nil) == .other,
+    check(AppLists.category(bundleID: "com.apple.Safari", url: "https://claude.ai/new") == .ai, "AI chat site")
+    check(AppLists.category(bundleID: "com.google.Chrome", url: "https://www.perplexity.ai/search") == .ai, "subdomain of an AI chat site")
+    check(AppLists.category(bundleID: "com.google.Chrome", url: "https://notclaude.ai/") == .other, "host suffixes match whole labels")
+    check(AppLists.category(bundleID: "com.google.Chrome", url: "https://mail.google.com/mail/u/0/") == .email, "Core's hosts still apply")
+    check(AppLists.category(bundleID: "com.tinyspeck.slackmacgap", url: nil) == .work && AppLists.category(bundleID: "com.unknown", url: nil) == .other,
           "Core's apps still apply")
-    check(AppClassifier.category(bundleID: "com.openai.chat", url: "https://chatgpt.com") == .ai, "a URL on a non-browser is ignored")
+    check(AppLists.category(bundleID: "com.openai.chat", url: "https://chatgpt.com") == .ai, "a URL on a non-browser is ignored")
 }
 
 private func insertionFnKeyboard() {

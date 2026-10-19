@@ -109,7 +109,7 @@ public struct FlowBarScene: Equatable, Sendable {
             guard case .meeting(let phase, _) = pill else { return nil }
             switch phase {
             case .pending: return plain(FlowBarCopy.meetingStarting)
-            case .recording(let words): return plain(FlowBarCopy.words(words))
+            case .recording(let words, _): return plain(FlowBarCopy.words(words))
             case .reconnecting: return plain(FlowBarCopy.meetingReconnecting)
             case .stopping: return plain(FlowBarCopy.meetingWrappingUp)
             }
@@ -157,24 +157,34 @@ public struct FlowBarModel: Equatable, Sendable {
 
     // MARK: State
 
+    /// The Notetaker's layer (`FlowBarPresenting.setMeetingPhase`): a phase records (and shows unless a dictation
+    /// state covers it); nil ends the meeting chrome and rests the bar.
+    public mutating func setMeetingPhase(_ phase: MeetingBarPhase?, now: Date) {
+        guard let phase else {
+            meetingPhase = nil
+            meetingStartedAt = nil
+            if case .meeting = state { setState(.resting, now: now) }
+            return
+        }
+        if case .recording(_, let startedAt) = phase { meetingStartedAt = startedAt }
+        meetingPhase = phase
+        switch state {
+        case .meeting, .resting, .hidden: setState(.meeting(phase), now: now)
+        default: break
+        }
+    }
+
     /// Applies a `FlowBarPresenting.setState`. Meeting chrome is a layer under dictation: `.meeting(…)` records the
-    /// phase; dictation states cover it; a later `.resting`/`.hidden` brings the meeting back, unless the meeting
-    /// chrome itself was showing, which is how the Notetaker ends it.
+    /// phase; dictation states cover it; a later `.resting`/`.hidden` brings the meeting back while it records.
     public mutating func setState(_ new: FlowBarState, now: Date) {
         let previous = state
         var effective = new
         switch new {
         case .meeting(let phase):
-            if meetingStartedAt == nil, case .recording = phase { meetingStartedAt = now }
+            if case .recording(_, let startedAt) = phase { meetingStartedAt = startedAt }
             meetingPhase = phase
         case .resting, .hidden:
-            if let phase = meetingPhase {
-                if case .meeting = previous {
-                    meetingPhase = nil; meetingStartedAt = nil
-                } else {
-                    effective = .meeting(phase)
-                }
-            }
+            if let phase = meetingPhase { effective = .meeting(phase) }
         default:
             break
         }

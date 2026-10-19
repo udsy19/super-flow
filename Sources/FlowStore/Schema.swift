@@ -3,7 +3,7 @@ import Foundation
 /// Tables (behaviour.md §19.1, trimmed to what the rebuild keeps). Each row is the JSON of its Core value plus the
 /// columns the queries need; FTS5 indexes the text that search covers. `migrate` runs the steps past `user_version`.
 enum Schema {
-    static let version = 1
+    static let version = 2
 
     static let create = """
     CREATE TABLE IF NOT EXISTS dictations (
@@ -18,6 +18,7 @@ enum Schema {
     CREATE TABLE IF NOT EXISTS snippets (
         id TEXT PRIMARY KEY, trigger TEXT NOT NULL UNIQUE COLLATE NOCASE, created_at REAL NOT NULL, json TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS transforms (id TEXT PRIMARY KEY, name TEXT NOT NULL, json TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS notes (id TEXT PRIMARY KEY, created_at REAL NOT NULL, updated_at REAL NOT NULL, json TEXT NOT NULL);
 
     CREATE TABLE IF NOT EXISTS meetings (
         id TEXT PRIMARY KEY, started_at REAL NOT NULL, ended_at REAL, has_audio INTEGER NOT NULL, title TEXT NOT NULL, json TEXT NOT NULL);
@@ -33,6 +34,11 @@ enum Schema {
         if db.userVersion < 1 {
             try db.exec(create)
             db.userVersion = 1
+        }
+        if db.userVersion < 2 {
+            // `create` is idempotent; version 2 adds the notes table.
+            try db.exec(create)
+            db.userVersion = 2
         }
     }
 
