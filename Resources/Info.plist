@@ -19,7 +19,7 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.0</string>
+	<string>1.0.0</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -37,6 +37,9 @@
 	<string>public.app-category.productivity</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
+	<!-- Accessibility and Input Monitoring have no prompt text of their own; Super Flow explains both on its permissions
+	     screen: Accessibility pastes the text and reads a little around the cursor, Input Monitoring lets the Fn/hotkey
+	     tap see the keys. -->
 	<key>NSAccessibilityUsageDescription</key>
 	<string>Super Flow uses Accessibility to put your spoken words into the text box you are typing in, to read a little text around the cursor for spelling and context, and to notice when a meeting app is running.</string>
 	<key>NSAppleEventsUsageDescription</key>

@@ -9,3 +9,7 @@ Models/
 *.gguf
 *.bin
 *.mlmodelc/
+
+# The Silero VAD ships inside the app; every other model is downloaded.
+!Resources/Models/
+!Resources/Models/**
