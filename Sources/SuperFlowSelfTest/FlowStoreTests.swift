@@ -1,6 +1,7 @@
 import Combine
 import Foundation
 import FlowStore
+import SQLite3
 import SuperFlowCore
 
 // Owned with FlowStore: the SQLite store behind HistoryStoring and MeetingStoring.
@@ -9,6 +10,10 @@ func registerFlowStoreTests() {
     SelfTest.cases.append(("FlowStore.dictionaryAndSnippets", { MainActor.assumeIsolated { storeDictionary() } }))
     SelfTest.cases.append(("FlowStore.meetings", { MainActor.assumeIsolated { storeMeetings() } }))
     SelfTest.cases.append(("FlowStore.damagedRecovery", { MainActor.assumeIsolated { storeRecovery() } }))
+    SelfTest.cases.append(("FlowStore.salvageDamagedPages", { MainActor.assumeIsolated { storeSalvage() } }))
+    SelfTest.cases.append(("FlowStore.migrationFailureKeepsRows", { MainActor.assumeIsolated { storeMigrationFailure() } }))
+    SelfTest.cases.append(("FlowStore.unwritableFolder", { MainActor.assumeIsolated { storeUnwritableFolder() } }))
+    SelfTest.cases.append(("FlowStore.concurrentWriters", { MainActor.assumeIsolated { storeConcurrentWriters() } }))
     SelfTest.cases.append(("FlowStore.notes", { MainActor.assumeIsolated { storeNotes() } }))
 }
 
@@ -126,4 +131,88 @@ func registerFlowStoreTests() {
     check(store.snippets.count == 1, "a damaged file is replaced by a working store")
     let backups = (try? FileManager.default.contentsOfDirectory(atPath: SuperFlowPaths.backup.path)) ?? []
     check(backups.contains { $0.hasSuffix(url.lastPathComponent) }, "the damaged file is kept in Backup")
+    check(store.openingNotice?.id == "store.damaged" && !store.isTemporary, "the user is told, and the new store is on disk")
+}
+
+/// A file damaged in its later pages: the rows that can still be read (the dictionary, a snippet, a meeting, the
+/// first dictations) are carried into the fresh store.
+@MainActor private func storeSalvage() {
+    let url = SuperFlowPaths.support.appendingPathComponent("salvage-\(UUID().uuidString).sqlite")
+    let word = DictionaryEntry(phrase: "Kubernetes", isStarred: true)
+    let snippet = Snippet(trigger: "my address", expansion: "1 Main St")
+    let meeting = sampleMeeting()
+    do {
+        let store = SQLiteStore.open(at: url)
+        try? store.save(word)
+        try? store.save(snippet)
+        try? store.save(meeting)
+        let filler = String(repeating: "lorem ipsum dolor sit amet ", count: 60)
+        for i in 0..<400 { try? store.save(Dictation(createdAt: Date(timeIntervalSince1970: 1_800_000_000 + Double(i)), rawText: filler, cleanedText: filler)) }
+    }   // closed: the WAL is checkpointed into the file
+    guard let handle = try? FileHandle(forUpdating: url), let size = try? handle.seekToEnd(), size > 64 * 1024 else {
+        check(false, "the test database was written"); return
+    }
+    try? handle.seek(toOffset: size - 16 * 1024)
+    try? handle.write(contentsOf: Data((0..<8192).map { UInt8(truncatingIfNeeded: $0 &* 37) }))
+    try? handle.close()
+
+    let reopened = SQLiteStore.open(at: url)
+    check(reopened.openingNotice?.id == "store.damaged", "damage found on open: \(String(describing: reopened.openingNotice?.id))")
+    check(reopened.dictionary.map(\.id) == [word.id] && reopened.snippets.map(\.id) == [snippet.id] && reopened.meeting(meeting.id) == meeting,
+          "the dictionary, snippets and meetings survive")
+    let kept = reopened.dictations(matching: "", limit: 1000, offset: 0).count
+    check(kept > 0, "the readable dictations are kept (\(kept) of 400)")
+    check(reopened.dictations(matching: "lorem", limit: 5, offset: 0).count == min(kept, 5), "search works on the kept rows")
+    let backups = (try? FileManager.default.contentsOfDirectory(atPath: SuperFlowPaths.backup.path)) ?? []
+    check(backups.contains { $0.hasSuffix(url.lastPathComponent) }, "the damaged file is kept in Backup")
+}
+
+/// A database whose tables don't have the shape this version expects: migration fails, the file goes to Backup, and
+/// its rows still come across from their JSON.
+@MainActor private func storeMigrationFailure() {
+    let url = SuperFlowPaths.support.appendingPathComponent("oldschema-\(UUID().uuidString).sqlite")
+    let dictation = Dictation(createdAt: Date(timeIntervalSince1970: 1_800_000_000), rawText: "ship it friday", cleanedText: "Ship it Friday.")
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .secondsSince1970
+    let json = String(decoding: (try? encoder.encode(dictation)) ?? Data(), as: UTF8.self)
+    var raw: OpaquePointer?
+    sqlite3_open(url.path, &raw)
+    sqlite3_exec(raw, "CREATE TABLE dictations (id TEXT PRIMARY KEY, json TEXT NOT NULL)", nil, nil, nil)
+    sqlite3_exec(raw, "INSERT INTO dictations VALUES ('\(dictation.id.uuidString)', '\(json.replacingOccurrences(of: "'", with: "''"))')", nil, nil, nil)
+    sqlite3_close(raw)
+
+    let store = SQLiteStore.open(at: url)
+    check(store.dictation(dictation.id) == dictation, "the row survives the failed migration")
+    check(store.openingNotice?.id == "store.damaged" && !store.isTemporary, "a fresh store on disk, and the user is told")
+    try? store.save(Snippet(trigger: "t", expansion: "e"))
+    check(store.snippets.count == 1, "the fresh store works")
+}
+
+/// A folder Super Flow can't write (read-only Application Support): no crash, no data touched, an in-memory session.
+@MainActor private func storeUnwritableFolder() {
+    let fm = FileManager.default
+    let folder = SuperFlowPaths.support.appendingPathComponent("locked-\(UUID().uuidString)", isDirectory: true)
+    try? fm.createDirectory(at: folder, withIntermediateDirectories: true)
+    try? fm.setAttributes([.posixPermissions: 0o555], ofItemAtPath: folder.path)
+    defer { try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: folder.path) }
+    let store = SQLiteStore.open(at: folder.appendingPathComponent("store.sqlite"))
+    check(store.isTemporary && store.openingNotice?.id == "store.unavailable", "an in-memory store and a notice")
+    let entry = DictionaryEntry(phrase: "Anaïs")
+    try? store.save(entry)
+    check(store.dictionary.map(\.id) == [entry.id], "the session still works")
+    check(((try? fm.contentsOfDirectory(atPath: folder.path)) ?? ["?"]).isEmpty, "nothing was written to the folder")
+}
+
+/// Two connections (two copies of the app, or the hub and a helper) writing the same file: every row lands.
+@MainActor private func storeConcurrentWriters() {
+    let url = SuperFlowPaths.support.appendingPathComponent("shared-\(UUID().uuidString).sqlite")
+    let a = SQLiteStore.open(at: url), b = SQLiteStore.open(at: url)
+    for i in 0..<50 {
+        try? a.save(Dictation(rawText: "a \(i)", cleanedText: "a \(i)"))
+        try? b.save(Dictation(rawText: "b \(i)", cleanedText: "b \(i)"))
+        try? (i % 2 == 0 ? a : b).save(DictionaryEntry(phrase: "word\(i)"))
+    }
+    check(a.dictations(matching: "", limit: 500, offset: 0).count == 100 && b.dictations(matching: "", limit: 500, offset: 0).count == 100,
+          "both writers' rows are there")
+    check(a.dictionary.count == 50 && a.openingNotice == nil && b.openingNotice == nil, "dictionary saved immediately from either side")
 }

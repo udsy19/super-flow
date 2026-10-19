@@ -590,12 +590,15 @@ public enum StoreError: LocalizedError, Equatable {
     case notFound(UUID)
     case invalid(String)
     case database(String)
+    /// The disk is full: nothing more can be written until space is freed.
+    case storageFull
 
     public var errorDescription: String? {
         switch self {
         case .notFound: "The item doesn't exist."
         case .invalid(let why): why
         case .database(let message): message
+        case .storageFull: "You are running out of space on your computer."
         }
     }
 }

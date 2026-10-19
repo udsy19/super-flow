@@ -30,15 +30,17 @@ enum Schema {
         json TEXT NOT NULL);
     """
 
+    /// The steps past each `user_version`, in order. `create` is idempotent; version 2 added the notes table.
+    private static let steps: [(version: Int, sql: String)] = [(1, create), (2, create)]
+
+    /// Each step and its version bump commit together, so a failure (a full disk, a crash) leaves the previous version
+    /// intact and the step runs again next time.
     static func migrate(_ db: Database) throws {
-        if db.userVersion < 1 {
-            try db.exec(create)
-            db.userVersion = 1
-        }
-        if db.userVersion < 2 {
-            // `create` is idempotent; version 2 adds the notes table.
-            try db.exec(create)
-            db.userVersion = 2
+        for step in steps where db.userVersion < step.version {
+            try db.transaction {
+                try db.exec(step.sql)
+                try db.exec("PRAGMA user_version = \(step.version)")
+            }
         }
     }
 

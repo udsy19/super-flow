@@ -44,6 +44,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if Defaults[.meetingDetection] == .notify { Services.meetingDetector.start() }
         Services.flowBar.setEdge(Defaults[.flowBarEdge])
         Services.flowBar.setState(Services.onboarding.isCompleted && !Defaults[.hideFlowBarPermanently] ? .resting : .hidden)
+        // The store had to be rebuilt from a damaged file, or runs in memory this session: say so once.
+        if let notice = (Services.history as? SQLiteStore)?.openingNotice { Services.flowBar.show(notice) { _ in } }
         if !Services.onboarding.isCompleted { Services.onboarding.show() } else { Services.hub.show(.home) }
         Services.updates.start()
     }

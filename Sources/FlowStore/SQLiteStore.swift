@@ -1,43 +1,131 @@
 import Combine
 import Foundation
+import SQLite3
 import SuperFlowCore
 
 /// Registers this module's services in `Services` (called once at launch).
 public enum FlowStoreModule {
     @MainActor public static func install() {
         let store = SQLiteStore.open()
-        store.importNotesFile(at: SuperFlowPaths.support.appendingPathComponent("notes.json"))
+        // An in-memory session would import the notes only to lose them at quit; the file waits for a usable store.
+        if !store.isTemporary { store.importNotesFile(at: SuperFlowPaths.support.appendingPathComponent("notes.json")) }
         Services.history = store
         Services.meetings = store
     }
 }
 
-/// The SQLite store behind `HistoryStoring` and `MeetingStoring`. A database that cannot be opened or migrated is
-/// moved to `SuperFlowPaths.backup` and a fresh one is started, so the app always launches.
+/// The SQLite store behind `HistoryStoring` and `MeetingStoring`. Opening never fails and never loses what is on disk:
+/// a damaged file (or one whose schema can't be brought up to date) is moved to `SuperFlowPaths.backup`, a fresh store
+/// starts, and every row that can still be read is copied into it; a file that can't be used for any other reason
+/// (read-only, busy, a full disk, a folder that can't be written) stays exactly where it is and the session runs on an
+/// in-memory store. Either way `openingNotice` says so once.
 @MainActor
 public final class SQLiteStore: HistoryStoring, MeetingStoring {
     private let db: Database
     private let changeSubject = PassthroughSubject<StoreChange, Never>()
     public var changes: AnyPublisher<StoreChange, Never> { changeSubject.eraseToAnyPublisher() }
 
+    /// Set when the store isn't the one on disk as it was: the card the app shows after launch (strings.md's database errors).
+    public private(set) var openingNotice: FlowBarNotification?
+    /// The session runs on an in-memory store: nothing is written to disk until the next launch.
+    public var isTemporary: Bool { db.url == nil }
+
     public static func open(at url: URL = SuperFlowPaths.database) -> SQLiteStore {
-        do {
-            return try SQLiteStore(url: url)
-        } catch {
-            Log.store.error("Store at \(url.path, privacy: .public) is damaged: \(error.localizedDescription, privacy: .public); starting over")
-            let fm = FileManager.default
-            let stamp = ISO8601DateFormatter().string(from: Date())
-            for suffix in ["", "-wal", "-shm"] {
-                let file = URL(fileURLWithPath: url.path + suffix)
-                try? fm.moveItem(at: file, to: SuperFlowPaths.backup.appendingPathComponent("\(stamp)-\(file.lastPathComponent)"))
+        switch connect(url) {
+        case .ready(let db):
+            return SQLiteStore(db)
+        case .unusable(let why, let full):
+            Log.store.error("Store at \(url.path, privacy: .public) can't be used (\(why, privacy: .public)); it is left untouched and this session keeps history in memory")
+            return temporary(notice: full ? StoreNotices.storageFull() : StoreNotices.unavailable())
+        case .damaged(let why):
+            Log.store.error("Store at \(url.path, privacy: .public) is damaged (\(why, privacy: .public)); a copy goes to Backup and a fresh store starts")
+            guard let backup = setAside(url), case .ready(let db) = connect(url) else {
+                return temporary(notice: StoreNotices.unavailable())
             }
-            return try! SQLiteStore(url: url)
+            let store = SQLiteStore(db)
+            let kept = store.salvage(from: backup)
+            Log.store.info("Kept \(kept) row(s) from the damaged store")
+            store.openingNotice = StoreNotices.damaged()
+            return store
         }
     }
 
-    public init(url: URL) throws {
-        db = try Database(url: url)
-        try Schema.migrate(db)
+    private init(_ db: Database) {
+        self.db = db
+    }
+
+    private static func temporary(notice: FlowBarNotification) -> SQLiteStore {
+        // An in-memory database only fails to open when SQLite itself can't allocate; there is nothing to fall back to.
+        let db = try! Database(url: nil)
+        try? Schema.migrate(db)
+        let store = SQLiteStore(db)
+        store.openingNotice = notice
+        return store
+    }
+
+    private enum Connection {
+        case ready(Database)
+        /// The file itself is damaged, or its schema can't be migrated: set it aside and start over.
+        case damaged(String)
+        /// Something around the file is wrong (permissions, locks, space): leave it alone.
+        case unusable(String, storageFull: Bool)
+    }
+
+    private static func connect(_ url: URL) -> Connection {
+        let db: Database
+        do { db = try Database(url: url) } catch let error as Database.OpenError {
+            return isDamage(error.code) ? .damaged(error.message) : .unusable(error.message, storageFull: error.code == SQLITE_FULL)
+        } catch {
+            return .unusable(error.localizedDescription, storageFull: false)
+        }
+        if let damage = db.damage() { return .damaged(damage) }
+        do { try Schema.migrate(db) } catch {
+            // A step the schema refuses (a table of another shape) is as unusable as damage; anything else is transient.
+            let schema = isDamage(db.lastFailure) || [SQLITE_ERROR, SQLITE_CONSTRAINT, SQLITE_MISMATCH, SQLITE_SCHEMA].contains(db.lastFailure)
+            return schema ? .damaged("migration: \(error.localizedDescription)")
+                          : .unusable(error.localizedDescription, storageFull: db.lastFailure == SQLITE_FULL)
+        }
+        return .ready(db)
+    }
+
+    private static func isDamage(_ code: Int32) -> Bool { code == SQLITE_CORRUPT || code == SQLITE_NOTADB }
+
+    /// Moves the database and its -wal/-shm into Backup under one time stamp; returns the moved database, or nil when
+    /// it couldn't be moved (the folder is read-only).
+    private static func setAside(_ url: URL) -> URL? {
+        let fm = FileManager.default
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        let moved = SuperFlowPaths.backup.appendingPathComponent("\(stamp)-\(url.lastPathComponent)")
+        do { try fm.moveItem(at: url, to: moved) } catch {
+            Log.store.error("Couldn't move the damaged store aside: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+        for suffix in ["-wal", "-shm"] {
+            try? fm.moveItem(at: URL(fileURLWithPath: url.path + suffix), to: URL(fileURLWithPath: moved.path + suffix))
+        }
+        return moved
+    }
+
+    /// Copies every row that can still be read and decoded from a set-aside database; returns how many were kept.
+    private func salvage(from backup: URL) -> Int {
+        guard let old = try? Database(url: backup, readOnly: true) else { return 0 }
+        var kept = 0
+        func copy<T: Decodable>(_ table: String, as type: T.Type, _ save: (T) throws -> Void) {
+            for json in old.readableJSON(of: table) {
+                guard let value = JSON.decode(type, json) else { continue }
+                do { try save(value); kept += 1 } catch {
+                    Log.store.error("Couldn't keep a row of \(table, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                }
+            }
+        }
+        copy("dictations", as: Dictation.self) { try save($0) }
+        copy("dictionary", as: DictionaryEntry.self) { try save($0) }
+        copy("snippets", as: Snippet.self) { try save($0) }
+        copy("transforms", as: TransformPrompt.self) { try save($0) }
+        copy("notes", as: ScratchNote.self) { try save($0) }
+        copy("meetings", as: Meeting.self) { try save($0) }
+        copy("action_items", as: ActionItem.self) { try save($0) }
+        return kept
     }
 
     // MARK: - Dictations
@@ -278,5 +366,26 @@ public final class SQLiteStore: HistoryStoring, MeetingStoring {
     public func deleteActionItem(_ id: UUID) throws {
         try db.run("DELETE FROM action_items WHERE id = ?", [.text(id.uuidString)])
         changeSubject.send(.actionItems)
+    }
+}
+
+/// The cards for a store that couldn't be opened as it was (strings.md `database_*`, rewritten for a local app).
+enum StoreNotices {
+    static func damaged() -> FlowBarNotification {
+        FlowBarNotification(id: "store.damaged", title: "Local database corruption",
+                            subtitle: "Some of your local data was damaged. Everything readable was kept, and a copy of the old file is in the Backup folder.",
+                            variant: .alert, timeout: nil)
+    }
+
+    static func unavailable() -> FlowBarNotification {
+        FlowBarNotification(id: "store.unavailable", title: "There was an error",
+                            subtitle: "Super Flow couldn't open its history, so nothing new is saved until it restarts. Restarting the app should fix it.",
+                            variant: .error, timeout: nil)
+    }
+
+    static func storageFull() -> FlowBarNotification {
+        FlowBarNotification(id: "store.full", title: "Storage Full",
+                            subtitle: "You are running out of space on your computer. Free some space, then restart Super Flow to save history again.",
+                            variant: .error, timeout: nil)
     }
 }

@@ -8,18 +8,36 @@ private let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self
 /// columns, so the schema stays small while the domain model evolves (see `Schema`).
 final class Database {
     private var db: OpaquePointer?
-    let url: URL
+    /// The file, nil for an in-memory database.
+    let url: URL?
 
-    init(url: URL) throws {
+    /// The primary result code of the last call that failed (`SQLITE_FULL`, `SQLITE_CORRUPT`…), so opening can tell a
+    /// damaged file from a busy, full or read-only one.
+    private(set) var lastFailure: Int32 = SQLITE_OK
+
+    /// Opening failed before there was a connection to ask.
+    struct OpenError: Error {
+        let code: Int32
+        let message: String
+    }
+
+    /// `url` nil is a private in-memory database (the fallback when the file can't be used).
+    init(url: URL?, readOnly: Bool = false) throws {
         self.url = url
-        guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
-            let message = db.map { String(cString: sqlite3_errmsg($0)) } ?? "open failed"
+        let flags = (readOnly ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE) | SQLITE_OPEN_FULLMUTEX
+        let rc = sqlite3_open_v2(url?.path ?? ":memory:", &db, flags, nil)
+        guard rc == SQLITE_OK else {
+            let error = OpenError(code: rc & 0xff, message: db.map { String(cString: sqlite3_errmsg($0)) } ?? "open failed")
             sqlite3_close(db)
-            throw StoreError.database(message)
+            throw error
         }
-        try exec("PRAGMA journal_mode = WAL")
-        try exec("PRAGMA foreign_keys = ON")
-        try exec("PRAGMA busy_timeout = 2000")
+        do {
+            if !readOnly { try exec("PRAGMA journal_mode = WAL") }
+            try exec("PRAGMA foreign_keys = ON")
+            try exec("PRAGMA busy_timeout = 2000")
+        } catch {
+            throw OpenError(code: lastFailure, message: error.localizedDescription)
+        }
     }
 
     deinit { sqlite3_close(db) }
@@ -29,8 +47,40 @@ final class Database {
         guard sqlite3_exec(db, sql, nil, nil, &error) == SQLITE_OK else {
             let message = error.map { String(cString: $0) } ?? "exec failed"
             sqlite3_free(error)
-            throw StoreError.database(message)
+            throw failure(message)
         }
+    }
+
+    /// Records why the last call failed and words it for callers: a full disk is `StoreError.storageFull`.
+    private func failure(_ message: String? = nil) -> StoreError {
+        lastFailure = sqlite3_errcode(db) & 0xff
+        return lastFailure == SQLITE_FULL ? .storageFull : .database(message ?? String(cString: sqlite3_errmsg(db)))
+    }
+
+    /// The file's own health (`PRAGMA quick_check`): nil when sound, else what is wrong.
+    func damage() -> String? {
+        do {
+            let report = try query("PRAGMA quick_check") { $0.text(0) }
+            return report == ["ok"] ? nil : report.prefix(3).joined(separator: "; ")
+        } catch {
+            return lastFailureIsDamage ? error.localizedDescription : nil
+        }
+    }
+
+    /// Whether the last failure says the file is damaged or not a database, rather than busy, full, read-only or locked.
+    var lastFailureIsDamage: Bool { [SQLITE_CORRUPT, SQLITE_NOTADB].contains(lastFailure) }
+
+    /// The `json` column of every row of `table` that can still be read, in storage order, stopping at the first damaged
+    /// page (salvage from a damaged database).
+    func readableJSON(of table: String) -> [String] {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT json FROM \(table)", -1, &statement, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(statement) }
+        var rows: [String] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            if let text = sqlite3_column_text(statement, 0) { rows.append(String(cString: text)) }
+        }
+        return rows
     }
 
     enum Value {
@@ -42,7 +92,7 @@ final class Database {
         let statement = try prepare(sql, binds)
         defer { sqlite3_finalize(statement) }
         let rc = sqlite3_step(statement)
-        guard rc == SQLITE_DONE || rc == SQLITE_ROW else { throw StoreError.database(String(cString: sqlite3_errmsg(db))) }
+        guard rc == SQLITE_DONE || rc == SQLITE_ROW else { throw failure() }
     }
 
     /// Runs a query and maps every row.
@@ -54,7 +104,7 @@ final class Database {
             let rc = sqlite3_step(statement)
             if rc == SQLITE_ROW { results.append(try row(Row(statement: statement!))) }
             else if rc == SQLITE_DONE { break }
-            else { throw StoreError.database(String(cString: sqlite3_errmsg(db))) }
+            else { throw failure() }
         }
         return results
     }
@@ -75,16 +125,11 @@ final class Database {
         }
     }
 
-    var userVersion: Int {
-        get { Int((try? scalar("PRAGMA user_version")) ?? 0) }
-        set { try? exec("PRAGMA user_version = \(newValue)") }
-    }
+    var userVersion: Int { Int((try? scalar("PRAGMA user_version")) ?? 0) }
 
     private func prepare(_ sql: String, _ binds: [Value]) throws -> OpaquePointer? {
         var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
-            throw StoreError.database(String(cString: sqlite3_errmsg(db)))
-        }
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw failure() }
         for (index, value) in binds.enumerated() {
             let i = Int32(index + 1)
             switch value {

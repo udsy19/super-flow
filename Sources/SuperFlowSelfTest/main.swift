@@ -40,7 +40,9 @@ registerHubKitTests()
 registerEndToEndTests()
 registerNativeSmokeTests()
 
-for (name, run) in SelfTest.cases {
+// `SUPERFLOW_SELFTEST_ONLY=FlowStore.,MeetingKit.crash` runs only the cases whose names start with one of the prefixes.
+let only = ProcessInfo.processInfo.environment["SUPERFLOW_SELFTEST_ONLY"]?.split(separator: ",").map(String.init) ?? []
+for (name, run) in SelfTest.cases where only.isEmpty || only.contains(where: name.hasPrefix) {
     let before = failures; run()
     print(failures == before ? "✓ \(name)" : "✗ \(name)")
 }

@@ -28,3 +28,9 @@ All notable changes to Super Flow are recorded here. The format follows Keep a C
 - Background updates from GitHub Releases, verified by SHA-256 and code signature.
 - Our own cue sounds (`scripts/make-sounds.swift`), `superflow://` URLs, a one-line installer and a DMG.
 - A headless self-test suite, including an end-to-end run of the real engines on synthetic speech.
+
+### Fixed
+- The store never crashes the launch or sets data aside without need: a damaged database, or one whose schema can't be
+  migrated, goes to Backup and every row that can still be read is copied into the fresh store; a database that is
+  merely busy, read-only or on a full disk is left untouched and the session runs in memory, with a card saying so.
+  Migration steps commit atomically, and a full disk is reported as "Storage Full".
