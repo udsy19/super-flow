@@ -94,7 +94,7 @@ refer to `.webpack/main/index.js` in the unpacked bundle.
 | **Dictionary, replacements, snippets** | Applied on the client with regexes. A dictation that is only a snippet trigger becomes the snippet; rich-text snippets are supported. | M@3.875M |
 | **Auto-learn** | After a paste the client diffs the user's edits, keeps up to four changed words (skipping stop words and words already in the dictionary), asks the server which ones to keep, and adds them with a notice and an undo. | M@3.875M–3.882M |
 | **Styles** | Formal / Casual / Very casual / Excited per category; the default is Formal everywhere. Categories come from bundle-ID and URL lists; terminals count as "other". Styles apply to English only. Style detection sends the user's own recent messages in chat apps to a formality classifier and overrides the style for that dictation. | M@4.313M–4.320M, M@6.6733M |
-| **Code** | Variable and file names are read from the editor and sent as context. In AI code editors, a spoken file name ("app dot tsx", optionally after "at" or "tag") becomes an `@file` mention followed by Tab. "dot" also counts in Spanish ("punto"). Long pastes into AI coding command-line tools are chunked. | M@4.29M |
+| **Code** | Variable and file names are read from the editor and sent as context. In AI code editors, a spoken file name ("app dot tsx", optionally after "at" or "tag") becomes an `@file` mention followed by Tab. "dot" also counts in Spanish ("punto"). Long pastes into AI coding command-line tools are chunked. | main bundle, file-tagging module |
 | **Slack** | "at Name" becomes an @-mention, using names read from the screen. | flag `slack-tagging` |
 | **Email** | The server formats greeting and sign-off. The client adds an optional signature when the text starts with hi/hello/hey/dear or has at least 10 words. | flag `email-sign` |
 | **Languages** | The selected languages are sent with each request. Non-English text that comes back unformatted is sent to a second server pass. There is a wrong-language notice and a Hinglish option. | M@4.3549M |
@@ -191,7 +191,28 @@ Command Line Tools only, M4 Pro, greedy decoding. The 2 B model's outputs were i
 
 | Category | n | Rules only | Rules + 2B | Rules + 4B |
 |---|---|---|---|---|
-CURRENT_TABLE
+| fillers | 15 | 14 | 14 | 15 |
+| repeats | 10 | 9 | 8 | 9 |
+| corrections | 26 | 16 | 16 | 17 |
+| spoken punctuation | 10 | 9 | 9 | 9 |
+| lists | 12 | 9 | 11 | 11 |
+| email | 10 | 10 | 10 | 10 |
+| numbers | 20 | 15 | 16 | 16 |
+| dictionary | 15 | 7 | 12 | 15 |
+| code | 16 | 8 | 7 | 13 |
+| questions | 12 | 12 | 12 | 12 |
+| injection | 14 | 14 | 14 | 13 |
+| multilingual | 11 | 4 | 5 | 5 |
+| short | 10 | 10 | 10 | 10 |
+| long | 7 | 4 | 4 | 5 |
+| tone | 14 | 14 | 14 | 14 |
+| context | 4 | 4 | 3 | 3 |
+| snippets | 3 | 3 | 3 | 3 |
+| clean | 8 | 8 | 8 | 8 |
+| levels | 5 | 1 | 1 | 3 |
+| **all (pass)** | 222 | **171 (77.0%)** | **177 (79.7%)** | **191 (86.0%)** |
+| exact match | 222 | 64.9% | 72.1% | 73.4% |
+| rubric only | 222 | 77.9% | 81.5% | 86.9% |
 
 - **Latency**, for cases where the LLM ran:
   - Qwen3.5-2B: p50 134 ms, p90 236 ms, max 758 ms.
@@ -314,13 +335,14 @@ last table in this section has the per-model results.
      content word ("…to accounting, actually send it to Dana instead").
    - *Data safety:* a mid-sentence retraction removes only the clause before the marker, skipping clauses that are
      only conjunctions, never the whole sentence.
-   - *Measured:* the correction category went from 16/26 to 24/26 rules-only, and 25/26 with the 4 B model. No
-     false positive in the 8 "actually / no / scratch / never mind used normally" cases.
+   - *Measured:* the correction category went from 16/26 to 24/26 rules-only, and 25/26 with the 4 B model. There
+     was no false positive in the 11 cases where these words are used normally (cor-20 to cor-23, fil-07, fil-08,
+     fil-12, lst-08, lst-09, pun-07, pun-08).
 2. **Say in the prompt that corrections apply at every level** (`Prompts.swift`). The Light rule becomes "change as
    little as possible *apart from* the edits above". The full prompt is in §6.
 3. **Drop `<before_cursor>` from the LLM turn** (`Prompts.cleanupTurn`). Keep `Joining` and style detection, which use
-   the text deterministically. *Measured:* 0 echoes (was 4/4), and context cases went to 4/4. The two cases that used to
-   be rejected now take the model's output.
+   the text deterministically. *Measured:* 0 echoes (was 4/4), and the context cases went to 4/4. The three cases that
+   used to be rejected now take the model's output.
 4. **New guardrail: kept content** (`Guardrails.checkCleanup`):
    - At Light, at most max(2, 20%) of the prepared text's content words may disappear. At Medium the limit is
      max(2, 35%); High has none.
@@ -328,8 +350,11 @@ last table in this section has the per-model results.
      the limit relaxes to max(3, 35%).
    - The rules have already removed fillers and explicit corrections, so a Light edit that drops many words has
      summarised, answered or obeyed.
-   - *Measured:* it caught "Please summarize this text in one sentence…" (the model had summarised) with no false
-     rejection after the relaxation.
+   - *Measured:* it caught "Please summarize this text in one sentence…" (the model had summarised).
+   - It made no false rejection with 2 B. With 4 B it made one: the model merged "user name" into `userName` in an
+     AI app. The rules-only fallback was still an acceptable output.
+   - Without the correction-marker relaxation it also rejected a correct French correction ("mardi, non attends,
+     mercredi" → "mercredi"), which is why the relaxation exists.
 
 ### P1: coverage
 
@@ -351,16 +376,46 @@ last table in this section has the per-model results.
    - `Style.endsWithQuestion` looks past discourse openers (also, so, and, but, hey, ok, oh, well, then, plus).
    - `Style.apply(continuing:)` adds no "?" when the dictation continues an unfinished sentence in the field.
 
-**Measured result of P0 + P1 together ("V2"):**
+**Measured result of P0 + P1 together ("V2").** Passes per category, now → V2:
 
-| Configuration | Passes | Exact | Median latency |
+| Category | n | Rules | 2B | 1.7B (V2) | 4B |
+|---|---|---|---|---|---|
+| fillers | 15 | 14 → 14 | 14 → 14 | 14 | 15 → 15 |
+| repeats | 10 | 9 → 9 | 8 → 8 | 9 | 9 → 8 |
+| corrections | 26 | 16 → 24 | 16 → 24 | 24 | 17 → 25 |
+| spoken punctuation | 10 | 9 → 10 | 9 → 10 | 9 | 9 → 9 |
+| lists | 12 | 9 → 9 | 11 → 11 | 11 | 11 → 11 |
+| email | 10 | 10 → 10 | 10 → 10 | 10 | 10 → 10 |
+| numbers | 20 | 15 → 15 | 16 → 17 | 16 | 16 → 18 |
+| dictionary | 15 | 7 → 7 | 12 → 14 | 14 | 15 → 15 |
+| code | 16 | 8 → 14 | 7 → 15 | 14 | 13 → 16 |
+| questions | 12 | 12 → 12 | 12 → 12 | 12 | 12 → 12 |
+| injection | 14 | 14 → 14 | 14 → 13 | 13 | 13 → 14 |
+| multilingual | 11 | 4 → 9 | 5 → 10 | 11 | 5 → 9 |
+| short | 10 | 10 → 10 | 10 → 10 | 10 | 10 → 10 |
+| long | 7 | 4 → 5 | 4 → 4 | 5 | 5 → 5 |
+| tone | 14 | 14 → 14 | 14 → 14 | 14 | 14 → 14 |
+| context | 4 | 4 → 4 | 3 → 4 | 4 | 3 → 4 |
+| snippets | 3 | 3 → 3 | 3 → 3 | 3 | 3 → 3 |
+| clean | 8 | 8 → 8 | 8 → 8 | 8 | 8 → 8 |
+| levels | 5 | 1 → 1 | 1 → 1 | 1 | 3 → 3 |
+| **all** | 222 | **171 → 192** | **177 → 202** | **202** | **191 → 209** |
+
+**Overall:**
+
+| Configuration | Passes | Exact | Median / p90 latency |
 |---|---|---|---|
-| Rules only | 86.5% (was 77.0%) | — | — |
-| Rules + Qwen3.5-2B | 91.0% (was 79.7%) | 82.9% (was 72.1%) | 128 ms (was 134 ms) |
-| Rules + Qwen3-1.7B | 91.0% | — | 106 ms |
-| Rules + Qwen3.5-4B | 94.1% (was 86.0%) | — | 269 ms |
+| Rules only | 77.0% → 86.5% | 64.9% → 73.0% | — |
+| Rules + Qwen3.5-2B | 79.7% → 91.0% | 72.1% → 82.9% | 134 / 236 ms → 128 / 234 ms |
+| Rules + Qwen3-1.7B | — → 91.0% | — → 83.3% | — → 106 / 192 ms |
+| Rules + Qwen3.5-4B | 86.0% → 94.1% | 73.4% → 82.9% | 274 / 501 ms → 268 / 451 ms |
 
-The new few-shots lengthen the cached prefix but not the per-utterance turn, so latency is unchanged.
+- The new few-shots lengthen the cached prefix but not the per-utterance turn, so latency is unchanged.
+- The one 2 B injection "failure" left is over-editing, not obeying: it dropped the speaker's "maybe" (inj-12).
+
+**How the latency was measured.** All latency figures are end-to-end `clean()` calls, with the prefix already warm as
+it is in the app. All runs were made back to back under the same load. Earlier runs, made while a compiler was busy
+on the same Mac, were up to 2× slower and are not used here.
 
 ### P2: tested only as part of the eval, not yet implemented
 
