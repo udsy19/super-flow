@@ -2,8 +2,8 @@
 
 Status: research, 19 Oct 2026. Every proposal below was tried in a scratch copy of CleanupKit and measured against the
 evaluation set; the numbers in this document come from that copy. Integrated the same day: P0, P1, P2.9 (numbers),
-P2.10 (a deterministic sound-alike pass; engine biasing only for Apple's engine), P2.11 (meant repeats) and P2.12
-(medium lists); the set runs as `CleanupKit.evalRulesOnly` / `CleanupKit.evalWithModel` in the self-test. Measured
+P2.10 (a deterministic sound-alike pass; engine biasing only for Apple's engine), P2.11 (meant repeats), P2.12
+(medium lists) and the language-drift guardrail of §9; the set runs as `CleanupKit.evalRulesOnly` / `CleanupKit.evalWithModel` in the self-test. Measured
 in the app's code: rules only 171 → 207 of 222 (93.2%); rules + Qwen3.5-2B 175 → 208 (93.7%), LLM p50 130 ms,
 p90 222 ms. P3 is not done.
 
