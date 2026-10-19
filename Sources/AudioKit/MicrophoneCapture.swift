@@ -9,6 +9,10 @@ final class MicrophoneCapture {
     private var engine: AVAudioEngine?
     private var deviceID: AudioObjectID?
     private var configurationObserver: NSObjectProtocol?
+    /// The tap's format, to tell a real change from the notification an engine posts while it settles after starting.
+    private var tapFormat: (sampleRate: Double, channels: AVAudioChannelCount)?
+    /// Rebuilds in the last couple of seconds; a device that keeps changing must not restart the tap forever.
+    private var recentRebuilds: [Date] = []
     private let assembler = FrameAssembler(channel: .mic)
     private let onFrames: ([AudioFrame]) -> Void
 
@@ -30,14 +34,39 @@ final class MicrophoneCapture {
             // The device's format or route changed (AirPods connecting, sample-rate switch, the device going away):
             // rebuild the tap, on the system default input if the device itself won't come back.
             guard let self, let engine = self.engine, note.object as? AVAudioEngine === engine else { return }
-            Log.audio.info("Microphone configuration changed; restarting the tap")
-            do { _ = try InputDevices.startWithFallback(self.deviceID) { try self.startEngine(deviceID: $0, name: name) } } catch {
-                Log.audio.error("The microphone couldn't be restarted: \(error.localizedDescription, privacy: .public)")
+            self.handleConfigurationChange(engine, name: name)
+        }
+    }
+
+    /// The engine stops itself when its configuration changes. Starting an engine on the built-in microphone posts
+    /// such a change too (the device settles), so the tap is only rebuilt when the format really changed or the engine
+    /// won't simply start again; otherwise rebuilding posts the next change and the tap never gets any audio.
+    private func handleConfigurationChange(_ engine: AVAudioEngine, name: String) {
+        guard !engine.isRunning else { return }
+        let format = engine.inputNode.outputFormat(forBus: 0)
+        if let tapFormat, format.sampleRate == tapFormat.sampleRate, format.channelCount == tapFormat.channels {
+            do {
+                try engine.start()
+                Log.audio.info("Microphone resumed after a configuration change")
+                return
+            } catch {
+                Log.audio.error("Microphone didn't resume: \(error.localizedDescription, privacy: .public)")
             }
+        }
+        let now = Date()
+        recentRebuilds = recentRebuilds.filter { now.timeIntervalSince($0) < 2 } + [now]
+        guard recentRebuilds.count <= 3 else {
+            Log.audio.error("Microphone keeps changing; not restarting the tap again")
+            return
+        }
+        Log.audio.info("Microphone configuration changed; restarting the tap")
+        do { _ = try InputDevices.startWithFallback(deviceID) { try startEngine(deviceID: $0, name: name) } } catch {
+            Log.audio.error("The microphone couldn't be restarted: \(error.localizedDescription, privacy: .public)")
         }
     }
 
     func stop() {
+        recentRebuilds = []
         if let configurationObserver { NotificationCenter.default.removeObserver(configurationObserver) }
         configurationObserver = nil
         guard let engine else { return }
@@ -78,6 +107,7 @@ final class MicrophoneCapture {
         }
         self.engine = engine
         self.deviceID = deviceID
+        tapFormat = (format.sampleRate, format.channelCount)
         Log.audio.info("Microphone started: \(name, privacy: .public) \(format.sampleRate) Hz × \(format.channelCount)")
     }
 }
