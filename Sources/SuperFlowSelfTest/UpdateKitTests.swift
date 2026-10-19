@@ -77,6 +77,7 @@ func registerUpdateKitTests() {
         check(!gate { $0.isRecordingMeeting = true }, "a meeting is being recorded")
     }))
 
+    SelfTest.cases.append(("UpdateKit.failedSwapKeepsOldApp", { updateFailedSwap() }))
     SelfTest.cases.append(("UpdateKit.endToEnd", { MainActor.assumeIsolated { endToEndUpdate() } }))
 }
 
@@ -270,4 +271,41 @@ private func endToEndUpdate() {
     check(trashed.count == 1 && shortVersion(trashed[0]) == "0.0.1", "previous version in the Trash")
     let lines = (try? String(contentsOf: log, encoding: .utf8))?.split(separator: "\n") ?? []
     for line in lines { print("  helper: \(line.replacingOccurrences(of: work.path, with: "<tmp>"))") }
+}
+
+/// A swap that can't finish leaves the installed app exactly where and as it was: the update going missing before the
+/// move, and the Trash refusing the old copy.
+private func updateFailedSwap() {
+    let fm = FileManager.default
+    let work = SuperFlowPaths.support.appendingPathComponent("swap-\(UUID().uuidString)", isDirectory: true)
+    let target = work.appendingPathComponent(UpdateInstaller.appName, isDirectory: true)
+    let marker = target.appendingPathComponent("Contents/Info.plist")
+    try? fm.createDirectory(at: marker.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try? Data("the installed version".utf8).write(to: marker)
+    let trash = work.appendingPathComponent("Trash", isDirectory: true)
+    try? fm.createDirectory(at: trash, withIntermediateDirectories: true)
+    let exited = Process()
+    exited.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+    try? exited.run()
+    exited.waitUntilExit()
+    func swap(staged: URL, trash: URL) -> Int32? {
+        guard let helper = try? UpdateInstaller.startSwap(waitingFor: exited.processIdentifier, staged: staged, target: target, trash: trash,
+                                                          relaunch: false, log: work.appendingPathComponent("update.log")) else { return nil }
+        helper.waitUntilExit()
+        return helper.terminationStatus
+    }
+    func intact() -> Bool { (try? String(contentsOf: marker, encoding: .utf8)) == "the installed version" }
+
+    // The staged copy vanished (cleaned up, or the disk was ejected) between staging and quitting.
+    let vanished = work.appendingPathComponent(".SuperFlow-update-9.9.9.app", isDirectory: true)
+    check(swap(staged: vanished, trash: trash) == 1 && intact(), "the old app is put back when the update can't move in")
+    check(((try? fm.contentsOfDirectory(atPath: trash.path)) ?? ["?"]).isEmpty, "nothing is left in the Trash")
+
+    // The old copy can't be moved to the Trash: nothing changes and the staged copy goes.
+    let staged = work.appendingPathComponent(".SuperFlow-update-9.9.9.app/Contents", isDirectory: true)
+    try? fm.createDirectory(at: staged, withIntermediateDirectories: true)
+    check(swap(staged: staged.deletingLastPathComponent(), trash: work.appendingPathComponent("No Trash")) == 1 && intact(),
+          "a Trash that refuses the old copy leaves it installed")
+    check(!fm.fileExists(atPath: staged.path), "and the update is dropped")
+    try? fm.removeItem(at: work)
 }
