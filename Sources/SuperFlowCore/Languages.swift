@@ -1,7 +1,7 @@
 import Foundation
 
 /// The dictation languages (behaviour.md §8.7, local-models.md §2.10) as BCP-47 base codes: Parakeet's 25 come from
-/// its catalog entry; Whisper's 99 are the list whisper.cpp ships. The hub offers the union; the speech service picks
+/// its catalog entry; Whisper's are the list whisper.cpp ships (99 plus Cantonese). The hub offers the union; the speech service picks
 /// the engine that covers the selection.
 public enum SupportedLanguages {
     public static let parakeet: [String] = ModelCatalog.parakeetV3.languages

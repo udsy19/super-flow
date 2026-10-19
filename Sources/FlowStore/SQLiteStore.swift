@@ -200,7 +200,7 @@ public final class SQLiteStore: HistoryStoring, MeetingStoring {
             Log.store.error("notes.json is unreadable; parked in Backup without importing")
         }
         let stamp = ISO8601DateFormatter().string(from: Date())
-        try? FileManager.default.moveItem(at: url, to: SuperFlowPaths.backup.appendingPathComponent("\(stamp)-notes.json"))
+        try? FileManager.default.moveItem(at: url, to: SuperFlowPaths.backup.appendingPathComponent("\(stamp)-\(url.lastPathComponent)"))
     }
 
     // MARK: - Meetings

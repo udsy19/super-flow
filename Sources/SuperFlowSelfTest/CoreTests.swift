@@ -203,14 +203,14 @@ private func coreContractAdditions() {
     let encoded = try? JSONEncoder().encode(meeting)
     check(encoded.flatMap { try? JSONDecoder().decode(Meeting.self, from: $0) }?.markers.first?.timestamp == "1:02:05", "markers round trip with a timestamp")
     check(MeetingExport.text(meeting, format: .markdown).contains("## Markers\n\n- 1:02:05 Pricing"), "export lists markers")
-    check(MeetingExport.text(meeting, format: .plainText).contains("THEM (00:01): Hi"), "plain-text transcript by channel label")
+    check(MeetingExport.text(meeting, format: .plainText).contains("Them (00:01): Hi"), "plain-text transcript by channel label")
     check(HubPage(rawValue: "history") == .history && StoreChange.notes != .reloaded, "history page and notes change")
     check(TransformError.tooLong.recoverySuggestion?.contains("1000") == true && TransformError.modelNotReady.errorDescription?.contains("getting ready") == true,
           "transform errors in Core")
     check(AppContext(fieldRole: "AXTextField").isSingleLineField && !AppContext(fieldRole: "AXTextArea").isSingleLineField, "single-line fields by role")
     check(TranscriptionOptions().channel == .mic && TranscriptionOptions(channel: .system).channel == .system, "channel on options")
     check(SupportedLanguages.parakeetCovers(["en", "de"]) && !SupportedLanguages.parakeetCovers(["en", "ja"]) && !SupportedLanguages.parakeetCovers([])
-              && SupportedLanguages.whisper.count == 99 && SupportedLanguages.all.contains("ja") && SupportedLanguages.base("pt_BR") == "pt",
+              && SupportedLanguages.whisper.count == 100 && SupportedLanguages.all.contains("ja") && SupportedLanguages.base("pt_BR") == "pt",
           "language lists")
     check(AppLists.category(bundleID: "com.openai.chat") == .ai && AppLists.category(bundleID: "com.apple.Safari", url: "https://claude.ai/new") == .ai,
           "AI chat apps and sites are in Core")
