@@ -13,6 +13,21 @@ enum Disfluency {
         "tsk", "la", "go",
     ]
 
+    /// Hesitation sounds of the other languages the speech engines write, removed only for that language.
+    static let foreignFillers: [String: Set<String>] = [
+        "fr": ["euh", "heu", "euhm"], "de": ["äh", "ähm", "öh", "öhm", "hm", "hmm"], "es": ["eh", "em", "ehm", "mmm"],
+        "it": ["ehm", "eh", "uhm", "mmm"], "pt": ["hum", "hmm", "ahn", "éh"], "nl": ["eh", "ehm", "uh", "uhm", "hmm"],
+    ]
+
+    static func removeFillers(_ words: inout Words, language: String) {
+        guard let set = foreignFillers[language] else { return }
+        var i = words.count - 1
+        while i >= 0 {
+            if !words[i].isPlaceholder, set.contains(words[i].lower) { words.remove(i..<i + 1) }
+            i -= 1
+        }
+    }
+
     static func removeFillers(_ words: inout Words) {
         var i = words.count - 1
         while i >= 0 {

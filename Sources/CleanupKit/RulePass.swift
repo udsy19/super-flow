@@ -11,6 +11,7 @@ struct RulePass {
     /// The English rule set (fillers, numbers, lists, styles); other languages get the language-neutral passes
     /// ("Style formatting only applies in English", strings.md `hub_banner_styles_disclaimer`).
     let english: Bool
+    let languageCode: String
     let pressEnterEnabled: Bool
     let vocabulary: Vocabulary
 
@@ -21,6 +22,7 @@ struct RulePass {
         category = input.context.app?.category ?? .other
         let language = input.transcript.language.lowercased()
         english = language.isEmpty || language == "auto" || language.hasPrefix("en")
+        languageCode = String(language.prefix(2))
         self.pressEnterEnabled = pressEnterEnabled
         vocabulary = Vocabulary(dictionary: input.dictionary, snippets: input.snippets)
     }
@@ -49,15 +51,25 @@ struct RulePass {
 
         var words = Words(text)
         if english { SpokenCommands.apply(&words) }
+        if english {
+            // Spoken symbols in terminals and AI/coding apps, file extensions everywhere; then dictionary sound-alikes.
+            SpokenSymbols.apply(&words, category: category)
+            vocabulary.soundAlikes.apply(&words)
+        }
         if !isVerbatim {
             if english {
                 Disfluency.removeFillers(&words)
                 SelfCorrections.apply(&words)
+            } else {
+                Disfluency.removeFillers(&words, language: languageCode)
             }
             Disfluency.collapseRepeats(&words)
             if english {
-                if category != .terminal { Lists.apply(&words) }
-                NumberWords.apply(&words)
+                if category != .terminal {
+                    Lists.apply(&words)
+                    if level == .medium || level == .high { Lists.bullets(&words) }
+                }
+                NumberWords.apply(&words, codes: [.document, .ai, .terminal].contains(category))
             }
             // Terminals take commands ("git status") as typed: no capitals added.
             if category != .terminal { Casing.sentenceCase(&words, english: english) }
@@ -69,6 +81,7 @@ struct RulePass {
     /// Spellings, style, format, snippet expansion and joining with the text around the cursor.
     func finish(_ text: String, _ prepared: Prepared, context: AppContext) -> String {
         var text = vocabulary.enforceSpellings(text)
+        let continuing = context.textBefore.last(where: { !$0.isWhitespace }).map { !".!?".contains($0) && !$0.isNewline } ?? false
         if !isVerbatim && english {
             if category == .email, let parts = Email.split(text) {
                 var parts = parts
@@ -77,7 +90,7 @@ struct RulePass {
                 text = Email.join(parts, style: style)
             } else {
                 text = Style.apply(text, style: style, category: category, keep: vocabulary.keepCase,
-                                   openEnd: endsWithInlineSnippet(text, prepared))
+                                   openEnd: endsWithInlineSnippet(text, prepared), continuing: continuing)
             }
         }
         switch format {

@@ -35,3 +35,20 @@ public enum SupportedLanguages {
         !languages.isEmpty && languages.allSatisfy { parakeet.contains(base($0)) }
     }
 }
+
+/// String distance shared by auto-learn (DictationKit) and the dictionary's sound-alike pass (CleanupKit).
+public enum TextDistance {
+    /// Levenshtein distance by character.
+    public static func edits(_ a: String, _ b: String) -> Int {
+        let x = Array(a), y = Array(b)
+        var previous = Array(0...y.count)
+        for i in 1...max(1, x.count) where i <= x.count {
+            var current = [i] + [Int](repeating: 0, count: y.count)
+            for j in 1...max(1, y.count) where j <= y.count {
+                current[j] = min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (x[i - 1] == y[j - 1] ? 0 : 1))
+            }
+            previous = current
+        }
+        return previous[y.count]
+    }
+}

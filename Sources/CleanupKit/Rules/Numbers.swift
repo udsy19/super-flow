@@ -3,7 +3,8 @@ import Foundation
 /// Spoken numbers, times, dates, money and percentages written the way people type them (behaviour.md §8.1):
 /// "twenty five" → "25", "three point five percent" → "3.5%", "ten thirty pm" → "10:30 PM", "march third twenty
 /// twenty six" → "March 3, 2026". Numbers under ten stay words in running text ("three ideas") unless they carry a
-/// unit, a time or a date.
+/// unit, a time or a date. Digits read out one by one become one number, never half of one ("one twenty three Main
+/// Street" → "123 Main Street", "five five five, one two three, four five six seven" → "555-123-4567").
 enum NumberWords {
     static let ones: [String: Int] = [
         "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
@@ -33,10 +34,12 @@ enum NumberWords {
         }
     }
 
-    static func apply(_ words: inout Words) {
+    /// `codes`: the text goes where status codes and versions are common (documents, AI and coding apps, terminals), so
+    /// "four oh four" is 404.
+    static func apply(_ words: inout Words, codes: Bool = false) {
         var i = 0
         while i < words.count {
-            if let step = rewrite(words, at: i) {
+            if let step = rewrite(words, at: i, codes: codes) {
                 words.replace(i..<i + step.consumed, with: step.words)
                 if step.yearComma { words[i + 1].gap = ", " }
                 if let month = step.capitalizeMonthBefore { words[month].text = words[month].text.capitalized }
@@ -118,12 +121,14 @@ enum NumberWords {
         guard used > 0 else { return nil }
         var parsed = Parsed(value: total + current, length: used, isOrdinal: ordinal)
         // "three point five", "zero point two five".
-        if !ordinal, used + 1 < parts.count, parts[used] == "point" {
-            let digits = parts[(used + 1)...].prefix { (ones[$0] ?? 10) < 10 || $0 == "oh" }
-            if !digits.isEmpty {
-                parsed.decimal = "\(parsed.value)." + digits.map { $0 == "oh" ? "0" : String(ones[$0]!) }.joined()
-                parsed.length += 1 + digits.count
-            }
+        // "three point five", "zero point two five", and versions: "two point four point one" → "2.4.1".
+        var decimal = String(parsed.value)
+        while !ordinal, parsed.length + 1 < parts.count, parts[parsed.length] == "point" {
+            let digits = parts[(parsed.length + 1)...].prefix { (ones[$0] ?? 10) < 10 || $0 == "oh" }
+            guard !digits.isEmpty else { break }
+            decimal += "." + digits.map { $0 == "oh" ? "0" : String(ones[$0]!) }.joined()
+            parsed.decimal = decimal
+            parsed.length += 1 + digits.count
         }
         return parsed
     }
@@ -155,9 +160,14 @@ enum NumberWords {
         var yearComma = false
     }
 
-    private static func rewrite(_ words: Words, at i: Int) -> Rewrite? {
+    private static func rewrite(_ words: Words, at i: Int, codes: Bool) -> Rewrite? {
+        if let phone = digitGroups(words, at: i) { return phone }
         let partList = parts(words, from: i)
-        guard let parsed = parse(partList.map(\.text)) else { return nil }
+        var texts = partList.map(\.text)
+        // "a hundred dollars" → "$100": "a" counts as one before a scale, for amounts only.
+        let indefinite = texts.first == "a" && texts.count > 1 && (texts[1] == "hundred" || scales[texts[1]] != nil)
+        if indefinite { texts[0] = "one" }
+        guard let parsed = parse(texts) else { return nil }
         // Only whole words are rewritten: "twenty-something" stays.
         let lastPart = parsed.length - 1
         guard lastPart + 1 == partList.count || partList[lastPart].word != partList[lastPart + 1].word else { return nil }
@@ -173,15 +183,26 @@ enum NumberWords {
             // Percentages and money.
             if next == "percent" { return Rewrite(consumed: end - i + 1, words: ["\(number)%"]) }
             if next == "per", afterNext == "cent" { return Rewrite(consumed: end - i + 2, words: ["\(number)%"]) }
+            // "one point two million dollars" → "$1.2 million".
+            if parsed.decimal != nil, let next, let scale = ["million", "billion"].first(where: { $0 == next }),
+               afterNext == "dollars" || afterNext == "dollar" {
+                return Rewrite(consumed: end - i + 2, words: ["$\(number)", scale])
+            }
             if next == "dollars" || next == "dollar" {
                 if let cents = centsAfter(words, at: end + 1) { return Rewrite(consumed: cents.end - i, words: ["$\(number).\(cents.text)"]) }
                 return Rewrite(consumed: end - i + 1, words: ["$\(number)"])
             }
             if next == "euros" || next == "euro" { return Rewrite(consumed: end - i + 1, words: ["€\(number)"]) }
             if next == "cents" { return Rewrite(consumed: end - i, words: [number]) }
+            if indefinite { return nil }
             // Times: "three pm", "ten thirty a.m.", "seven forty five pm", "three o'clock", "at three thirty".
             if parsed.decimal == nil, (1...12).contains(parsed.value), let time = time(words, hour: parsed.value, from: i, end: end) {
                 return time
+            }
+            if parsed.decimal == nil, parsed.length == 1, (1...9).contains(parsed.value),
+               let read = digitRead(partList, unit: parsed.value, codes: codes),
+               read.end == partList.count || partList[read.end].word != partList[read.end - 1].word {
+                return Rewrite(consumed: partList[read.end - 1].word + 1 - i, words: [read.text])
             }
         }
         // Dates: "March third" → "March 3", with an optional year → "March 3, 2026".
@@ -206,6 +227,49 @@ enum NumberWords {
         }
         guard parsed.value >= 10 else { return nil }
         return Rewrite(consumed: end - i, words: [number])
+    }
+
+    /// A digit read out before a two-digit number: "one twenty three" → "123" (an address, a room, a flight), and with
+    /// `codes` "four oh four" → "404". Times were tried first ("at one twenty three" is 1:23). `end` is the index in
+    /// `parts` after the read.
+    private static func digitRead(_ parts: [Part], unit: Int, codes: Bool) -> (text: String, end: Int)? {
+        guard parts.count >= 2 else { return nil }
+        let second = parts[1].text
+        if codes, second == "oh", parts.count >= 3, let last = ones[parts[2].text], last < 10 {
+            return ("\(unit)0\(last)", 3)
+        }
+        if let ten = tens[second], parts.count >= 3, let last = ones[parts[2].text], (1...9).contains(last) {
+            return (String(unit * 100 + ten + last), 3)
+        }
+        return nil
+    }
+
+    /// Groups of digits read one by one with the commas speech engines put between them, as in a phone number
+    /// ("five five five, one two three, four five six seven" → "555-123-4567"): the whole run or nothing.
+    private static func digitGroups(_ words: Words, at i: Int) -> Rewrite? {
+        func digit(_ k: Int, first: Bool) -> String? {
+            guard !words[k].isPlaceholder else { return nil }
+            let lower = words[k].lower
+            if let value = ones[lower], value < 10 { return String(value) }
+            if !first, lower == "oh" { return "0" }
+            if lower.count == 1, lower.allSatisfy(\.isNumber) { return lower }
+            return nil
+        }
+        var groups: [String] = []
+        var end = i
+        var j = i
+        while j < words.count {
+            var group = ""
+            var k = j
+            while k < words.count, k == j || Gap.isSpace(words[k].gap), let d = digit(k, first: k == j) { group += d; k += 1 }
+            guard (3...4).contains(group.count) else { break }
+            groups.append(group)
+            end = k
+            guard k < words.count, Gap.hasComma(words[k].gap), Gap.withoutCommas(words[k].gap) == " " else { break }
+            j = k
+        }
+        guard groups.count >= 2, groups.joined().count >= 7 else { return nil }
+        return Rewrite(consumed: end - i, words: [groups.joined(separator: "-")])
     }
 
     private static func time(_ words: Words, hour: Int, from i: Int, end: Int) -> Rewrite? {

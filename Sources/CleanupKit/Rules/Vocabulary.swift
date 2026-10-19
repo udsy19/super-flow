@@ -4,6 +4,7 @@ import SuperFlowCore
 /// The personal dictionary and snippets (behaviour.md §8.5, §8.6; local-models.md §3.5 steps 2–5).
 ///
 /// - Replacements ("misspelling → spelling", including learned corrections) are applied before the LLM.
+/// - Sound-alikes of dictionary words become the words before it ("Shivon" → "Siobhan", `SoundAlikes`).
 /// - Spellings are enforced after it, case-exact, and tolerate the spacing and accents speech engines drop
 ///   ("chat gpt" → "ChatGPT", "Anais" → "Anaïs").
 /// - Snippet triggers become opaque placeholders (`⟦S1⟧`) before the LLM and are expanded verbatim at the very end.
@@ -17,6 +18,7 @@ struct Vocabulary {
     let keepCase: Set<String>
     /// Dictionary words for the LLM's `<dictionary>` block: starred first (behaviour.md §6.6), at most 50.
     let hints: [String]
+    let soundAlikes: SoundAlikes
 
     init(dictionary: [DictionaryEntry], snippets: [Snippet]) {
         let byLength: (String, String) -> Bool = { $0.count > $1.count }
@@ -35,6 +37,7 @@ struct Vocabulary {
             return Rule(pattern: pattern, output: word)
         }
         keepCase = Set(distinct.filter { $0 != $0.lowercased() }.flatMap { $0.lowercased().split(separator: " ").map(String.init) })
+        soundAlikes = SoundAlikes(spellings: distinct)
 
         let ordered = dictionary.filter(\.isStarred) + dictionary.filter { !$0.isStarred }
         hints = Array(NSOrderedSet(array: ordered.map { $0.replacement?.isEmpty == false ? $0.replacement! : $0.phrase })

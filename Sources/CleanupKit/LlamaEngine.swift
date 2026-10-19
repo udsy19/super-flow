@@ -183,7 +183,7 @@ public actor LlamaEngine: CleanupLanguageModel {
     }
 
     /// The model started another turn or echoed the prompt's tags: stop early (the guardrails reject the output).
-    private static let stops = ["<|im_start|>", "<|im_end|>", "<|endoftext|>", "</transcript>", "<transcript>"]
+    private static let stops = ["<|im_start|>", "<|im_end|>", "<|endoftext|>", "</transcript>", "<transcript>", "<dictionary>"]
     private static func reachedStop(_ bytes: [UInt8]) -> Bool {
         let tail = String(decoding: bytes.suffix(24), as: UTF8.self)
         return stops.contains { tail.contains($0) }

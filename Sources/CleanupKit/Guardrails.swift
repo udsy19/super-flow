@@ -21,15 +21,21 @@ enum Guardrails {
     ])
 
     /// Bounds per cleanup level: output/input word ratio, the share of new content words allowed, and the share of the
-    /// input's content words that may go missing. Medium and high rephrase by design, so they tolerate more new and
-    /// missing words; high also shortens.
+    /// input's content words that may go missing (cleanup-quality.md §5 P0.4). Medium and high rephrase by design, so they
+    /// tolerate more new and missing words; high also shortens.
     private static func limits(_ level: CleanupLevel) -> (ratio: ClosedRange<Double>, novel: Double, dropped: Double) {
         switch level {
-        case .none, .light: (0.5...1.25, 0.15, 0.25)
+        case .none, .light: (0.5...1.25, 0.15, 0.2)
         case .medium: (0.5...1.25, 0.25, 0.35)
         case .high: (0.35...1.25, 0.4, 0.6)
         }
     }
+    /// Words a speaker corrects themselves with, in the languages the speech engines write (accent-folded). A correction
+    /// the rules could not resolve (another language, an unusual marker) legitimately drops the words it replaces.
+    private static let correctionMarkers: Set<String> = ["no", "non", "nein", "nee", "sorry", "actually", "wait", "attends", "perdon",
+                                                         "scusa", "mean", "meant", "rather", "scratch", "oops"]
+    /// Repeats the speaker means ("she had had enough"): the model must not tidy them away (§5 P2.11).
+    private static let meantRepeats: Set<String> = ["had", "that", "bye"]
 
     /// The cleaned output, or why it is rejected.
     static func checkCleanup(_ output: String, input: String, level: CleanupLevel, hints: [String]) -> Result<String, Rejection> {
@@ -46,7 +52,9 @@ enum Guardrails {
         let (ratio, novelShare, droppedShare) = limits(level)
         let n = Double(inputWords.count), m = Double(outputWords.count)
         let upper = max((ratio.upperBound * n).rounded(.up), n + 2)
-        if m < (ratio.lowerBound * n).rounded(.down) || m > upper {
+        // Spoken numbers shrink when written ("five five five, one two three…" → 555-123-…): a run of number words and a
+        // written number each count once for the lower bound.
+        if Double(numbersCollapsed(outputWords)) < (ratio.lowerBound * Double(numbersCollapsed(inputWords))).rounded(.down) || m > upper {
             return .failure(Rejection(.hallucination, "word ratio \(outputWords.count)/\(inputWords.count)"))
         }
         let known = (inputWords + hints.flatMap { words($0) }).reduce(into: Set<String>()) { $0.formUnion(stems($1)) }
@@ -59,8 +67,13 @@ enum Guardrails {
         let written = outputWords.reduce(into: Set<String>()) { $0.formUnion(stems($1)) }
         let said = inputWords.filter { !stopWords.contains($0) && !NumberWords.isNumeric($0) }
         let lost = said.filter { stems($0).isDisjoint(with: written) }
-        if Double(lost.count) > max(1, droppedShare * Double(said.count)) {
+        let corrected = !correctionMarkers.isDisjoint(with: inputWords)
+        let allowed = corrected ? max(3, max(droppedShare, 0.35) * Double(said.count)) : max(2, droppedShare * Double(said.count))
+        if Double(lost.count) > allowed {
             return .failure(Rejection(.hallucination, "dropped words: \(lost.prefix(5).joined(separator: ", "))"))
+        }
+        if let repeated = doubled(inputWords).subtracting(doubled(outputWords)).first {
+            return .failure(Rejection(.hallucination, "dropped \"\(repeated) \(repeated)\""))
         }
         // A dictated question comes back as a question, not as an answer.
         if let first = inputWords.first, Lexicon.isQuestion(firstWord: first, secondWord: inputWords.dropFirst().first),
@@ -115,6 +128,23 @@ enum Guardrails {
         return Words(unlisted).items.filter { !$0.isPlaceholder }.map {
             $0.text.lowercased().folding(options: .diacriticInsensitive, locale: nil).replacingOccurrences(of: "’", with: "'")
         }
+    }
+
+    /// The word count with each run of number words, and each written number, counted once.
+    private static func numbersCollapsed(_ words: [String]) -> Int {
+        var count = 0
+        var inNumber = false
+        for word in words {
+            let numeric = NumberWords.isNumeric(word) || word.contains(where: \.isNumber)
+            if !numeric || !inNumber { count += 1 }
+            inNumber = numeric
+        }
+        return count
+    }
+
+    /// The meant repeats ("had had") in the words.
+    private static func doubled(_ words: [String]) -> Set<String> {
+        Set(zip(words, words.dropFirst()).filter { $0 == $1 && meantRepeats.contains($0) }.map(\.0))
     }
 
     /// The word and its crude stems, so "meetings" matches "meeting" and "moved" matches "move".

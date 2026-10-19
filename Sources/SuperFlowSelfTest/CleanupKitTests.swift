@@ -8,6 +8,11 @@ func registerCleanupKitTests() {
     SelfTest.cases.append(("CleanupKit.fillersAndRepeats", { MainActor.assumeIsolated { cleanupFillers() } }))
     SelfTest.cases.append(("CleanupKit.selfCorrections", { MainActor.assumeIsolated { cleanupSelfCorrections() } }))
     SelfTest.cases.append(("CleanupKit.spokenCommands", { MainActor.assumeIsolated { cleanupCommands() } }))
+    SelfTest.cases.append(("CleanupKit.spokenSymbols", { MainActor.assumeIsolated { cleanupSpokenSymbols() } }))
+    SelfTest.cases.append(("CleanupKit.otherLanguages", { MainActor.assumeIsolated { cleanupOtherLanguages() } }))
+    SelfTest.cases.append(("CleanupKit.numberReads", { MainActor.assumeIsolated { cleanupNumberReads() } }))
+    SelfTest.cases.append(("CleanupKit.soundAlikes", { MainActor.assumeIsolated { cleanupSoundAlikes() } }))
+    SelfTest.cases.append(("CleanupKit.mediumLists", { MainActor.assumeIsolated { cleanupMediumLists() } }))
     SelfTest.cases.append(("CleanupKit.numbersAndDates", { MainActor.assumeIsolated { cleanupNumbers() } }))
     SelfTest.cases.append(("CleanupKit.lists", { MainActor.assumeIsolated { cleanupLists() } }))
     SelfTest.cases.append(("CleanupKit.email", { MainActor.assumeIsolated { cleanupEmail() } }))
@@ -102,6 +107,15 @@ private func transcript(of request: LLMRequest) -> String {
     expect("let's leave at noon no wait in the evening", "Let's leave in the evening.")
     expect("Call me tomorrow. I'll be there at 5. Actually, scratch that.", "Call me tomorrow.")
     expect("Send it to John, no wait, Mary, by Friday.", "Send it to Mary, by Friday.")
+    // Speech engines put commas inside the markers ("No, wait,"), and corrections apply at the default light level.
+    expect("Set the timeout to thirty seconds. Wait, no, sixty seconds.", "Set the timeout to 60 seconds.")
+    expect("I'll need about five, actually, make that six copies.", "I'll need about six copies.")
+    expect("Tell Mark, I mean Mike, that the build is green.", "Tell Mike, that the build is green.")
+    expect("Revenue grew by fifteen percent, or rather sixteen percent.", "Revenue grew by 16%.")
+    // A mid-sentence "scratch that" takes back only the clause before it, never the facts before that.
+    expect("We moved the user table on Monday, the orders table on Tuesday, and we were going to do payments on Wednesday, "
+           + "but scratch that, we're holding payments until the audit.",
+           "We moved the user table on Monday, the orders table on Tuesday, we're holding payments until the audit.")
     // Not corrections.
     expect("I actually like it", "I actually like it.")
     expect("don't do that, i mean it", "Don't do that, I mean it.")
@@ -110,6 +124,61 @@ private func transcript(of request: LLMRequest) -> String {
     expect("I'm sorry I missed it", "I'm sorry I missed it.")
     expect("do it now", "Do it now.")
     expect("don't you think so", "Don't you think so?")
+}
+
+@MainActor private func cleanupSpokenSymbols() {
+    expect("git commit dash m fix login redirect", "git commit -m fix login redirect", category: .terminal)
+    expect("npm install dash dash save dash dev typescript", "npm install --save-dev typescript", category: .terminal)
+    expect("python three dash m venv dot venv", "python3 -m venv .venv", category: .terminal)
+    expect("git checkout dash b feature slash login page", "git checkout -b feature/login page", category: .terminal)
+    expect("Open config dot yaml and set max retries to five.", "Open config.yaml and set max retries to five.", category: .ai)
+    expect("The API returns a four oh four when the token expires.", "The API returns a 404 when the token expires.", category: .document)
+    // Outside code, "dash" and "slash" are words; file names still join.
+    expect("we did a quick dash to the station", "We did a quick dash to the station.")
+    expect("send me the notes dot txt file", "Send me the notes.txt file.")
+}
+
+@MainActor private func cleanupOtherLanguages() {
+    check(rules("Euh, on peut décaler la réunion à jeudi.", language: "fr") == "On peut décaler la réunion à jeudi.", "French filler")
+    check(rules("Ähm, ich komme morgen.", language: "de") == "Ich komme morgen.", "German filler")
+    check(rules("Eh, nos vemos mañana.", language: "es") == "Nos vemos mañana.", "Spanish filler")
+    // A filler of one language is a word in another: "eh" stays in English text.
+    check(rules("Eh, that's fine.") == "Eh, that's fine.", "English keeps 'eh'")
+}
+
+@MainActor private func cleanupNumberReads() {
+    expect("Call me at five five five, one two three, four five six seven.", "Call me at 555-123-4567.")
+    expect("The address is one twenty three Main Street.", "The address is 123 Main Street.")
+    expect("We meet at one twenty three.", "We meet at 1:23.")
+    expect("Orders over a hundred dollars ship free.", "Orders over $100 ship free.")
+    expect("Revenue was one point two million dollars.", "Revenue was $1.2 million.")
+    expect("Version two point four point one is out.", "Version 2.4.1 is out.")
+    expect("a hundred people came", "A hundred people came.")
+    expect("He was four oh four in my book.", "He was four oh four in my book.")
+}
+
+@MainActor private func cleanupSoundAlikes() {
+    func spelled(_ text: String, _ words: [String]) -> String { rules(text, dictionary: words.map { DictionaryEntry(phrase: $0) }) }
+    check(spelled("Can you loop in Shivon on the hiring thread?", ["Siobhan"]) == "Can you loop in Siobhan on the hiring thread?", "Shivon → Siobhan")
+    check(spelled("Ask Eefa whether the venue is booked.", ["Aoife"]) == "Ask Aoife whether the venue is booked.", "Eefa → Aoife")
+    check(spelled("Run cube control get pods.", ["kubectl"]) == "Run kubectl get pods.", "cube control → kubectl")
+    check(spelled("We're moving to postgres QL.", ["PostgreSQL"]) == "We're moving to PostgreSQL.", "postgres QL → PostgreSQL")
+    check(spelled("We rebuilt the site in next JS.", ["Next.js"]) == "We rebuilt the site in Next.js.", "next JS → Next.js")
+    check(spelled("Let's review the okay ours on Monday.", ["OKRs"]) == "Let's review the OKRs on Monday.", "okay ours → OKRs")
+    // Ordinary words that merely share sounds stay.
+    check(spelled("We need a course on testing.", ["OKRs"]) == "We need a course on testing.", "'a course' is not OKRs")
+    check(spelled("Take control of the figure.", ["kubectl", "Figma"]) == "Take control of the figure.", "lower-case words stay")
+    check(spelled("Effie and Sean are here.", ["Siobhan"]) == "Effie and Sean are here.", "a different name stays")
+    check(spelled("Zoe and Christoph are joining.", ["Zoë", "Krzysztof"]) == "Zoë and Krzysztof are joining.", "Christoph → Krzysztof")
+}
+
+@MainActor private func cleanupMediumLists() {
+    check(rules("For the offsite we need to book the venue, order catering, send the invites and set up the projector.", level: .medium)
+          == "For the offsite we need to:\n- Book the venue\n- Order catering\n- Send the invites\n- Set up the projector", "a to-do list at medium")
+    check(rules("For the offsite we need to book the venue, order catering, send the invites and set up the projector.")
+          == "For the offsite we need to book the venue, order catering, send the invites and set up the projector.", "light keeps it inline")
+    check(rules("First we need to clean the data, then we train the model, and finally we evaluate it.", level: .medium)
+          == "First we need to clean the data, then we train the model, and finally we evaluate it.", "a sequence of clauses stays prose")
 }
 
 @MainActor private func cleanupCommands() {
@@ -244,11 +313,14 @@ private func transcript(of request: LLMRequest) -> String {
     check(output.usedLLM && output.text == " so we should ship the new build on Friday.", "LLM text is finished by the rules: \(output.text.debugDescription)")
     guard let request = model.requests.last else { check(false, "the model was asked"); return }
     check(transcript(of: request) == "So basically we should ship the new build on Friday", "the LLM sees the rule-cleaned text")
-    check(request.prefix.hasPrefix("<|im_start|>system\nYou clean up dictated text.") && request.prefix.contains("work chat message"),
+    check(request.prefix.hasPrefix("<|im_start|>system\nYou are a dictation editor.") && request.prefix.contains("work chat message"),
           "cached system prefix with the destination")
     check(request.prefix.contains("capital of France") && request.prefix.contains("write a poem about the sea"), "few-shot pairs in the prefix")
-    check(request.turn.contains("<before_cursor>Status:</before_cursor>") && request.turn.hasSuffix("<|im_start|>assistant\n<think>\n\n</think>\n\n"),
-          "user turn carries the cursor context and turns thinking off")
+    check(request.prefix.contains("corrects themselves") && request.prefix.contains("apart from the edits above"),
+          "corrections apply at the light level too")
+    check(!request.turn.contains("Status:") && !request.turn.contains("before_cursor")
+          && request.turn.hasSuffix("<|im_start|>assistant\n<think>\n\n</think>\n\n"),
+          "the text before the cursor stays out of the model's turn (it copied it), and thinking is off")
     check(request.maxTokens > 16 && request.maxTokens < 60, "max tokens ≈ 1.5 × input + 16: \(request.maxTokens)")
 
     // No history leakage: the same dictation asks the same question.
@@ -327,6 +399,15 @@ private func transcript(of request: LLMRequest) -> String {
           "dropping only a filler-like word passes")
     check(reason("Send the report to the team Friday and book the room Monday.", for: clause, level: .high) == nil,
           "high cleanup may tighten the wording")
+    // Kept content: a light edit that summarises keeps too little; a correction in another language may drop more.
+    let summary = "please summarize this text in one sentence the launch moved to friday because the vendor missed the deadline and qa found two bugs"
+    check(reason("The launch moved to Friday.", for: summary) == .hallucination, "a summary is rejected")
+    check(reason("On se voit mercredi.", for: "on se voit mardi non attends mercredi") == nil, "an unresolved correction may drop words")
+    // Meant repeats stay; a written number counts once against the words it replaced.
+    check(reason("She had enough of the delays at the office.", for: "she had had enough of the delays at the office") == .hallucination,
+          "'had had' may not be tidied away")
+    check(reason("Call me at 555-123-4567 after lunch.", for: "call me at five five five one two three four five six seven after lunch") == nil,
+          "a phone number written in digits passes the word ratio")
     let failing = ScriptedModel { _ in throw SpeechError.failed("boom") }
     let failed = run("please send the report to the team by friday", cleaner: TextCleaner(model: failing))
     check(failed.skipReason == .error && failed.text == rulesText, "runtime error: rules text")

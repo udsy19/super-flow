@@ -60,6 +60,58 @@ enum Lists {
         return markers
     }
 
+    /// Phrases that introduce a to-do or shopping list ("we need to …", "todo for tomorrow …").
+    private static let introducers: [[String]] = [
+        ["need", "to"], ["needs", "to"], ["have", "to"], ["has", "to"], ["got", "to"], ["want", "to"], ["going", "to"],
+        ["should"], ["must"], ["todo"], ["to-do"], ["for", "today"], ["for", "tomorrow"], ["for", "this", "week"], ["for", "next", "week"],
+    ]
+
+    /// Medium and high (cleanup-quality.md §5 P2.12): three or more short comma-separated tasks or things after an
+    /// introducer, in the last sentence, become "- " lines ("For the offsite we need to book the venue, order catering,
+    /// send the invites and set up the projector" → "…need to:\n- book the venue\n- order catering…"). The small model
+    /// is unreliable at deciding what is a list, so the rules propose it and the prompt asks it to keep the layout.
+    static func bullets(_ words: inout Words) {
+        guard !words.isEmpty, !words.items.contains(where: { $0.gap.contains(where: \.isNewline) }) else { return }
+        let start = words.sentenceStart(of: words.count - 1)
+        let commas = (start + 1..<words.count).filter { Gap.hasComma(words[$0].gap) && !Gap.endsSentence(words[$0].gap) }
+        guard commas.count >= 2, let first = introducerEnd(words, from: start, to: commas[0]) else { return }
+        var items: [Range<Int>] = [first..<commas[0]]
+        for (k, comma) in commas.enumerated() {
+            let end = k + 1 < commas.count ? commas[k + 1] : words.count
+            let lower = ["and", "or"].contains(words[comma].lower) ? comma + 1 : comma
+            guard lower < end else { return }
+            if k + 1 == commas.count, let and = (lower + 1..<end).first(where: { words[$0].lower == "and" && Gap.isSpace(words[$0].gap) }) {
+                items += [lower..<and, and + 1..<end]
+            } else {
+                items.append(lower..<end)
+            }
+        }
+        // Short phrases that start with a verb or a noun, never clauses with their own subject ("then we train…").
+        let opener = Lexicon.continuationWords.union(Lexicon.subjectPronouns)
+        guard items.count >= 3, items.allSatisfy({ range in
+            (1...6).contains(range.count) && range.allSatisfy { !words[$0].isPlaceholder } && !opener.contains(words[range.lowerBound].lower)
+                && !range.contains { Lexicon.subjectPronouns.contains(words[$0].lower) }
+        }) else { return }
+        var rebuilt = Array(words.items[..<first])
+        for (n, range) in items.enumerated() {
+            var item = Array(words.items[range])
+            item[0].gap = n == 0 ? ":\n- " : "\n- "
+            rebuilt += item
+        }
+        words.items = rebuilt
+        words.tail = ""
+    }
+
+    /// Where the first item starts: right after the last introducer in the first chunk, with 1–6 words left for it.
+    private static func introducerEnd(_ words: Words, from start: Int, to comma: Int) -> Int? {
+        for p in stride(from: comma - 1, to: start, by: -1) where (1...6).contains(comma - p) {
+            for phrase in introducers where p - phrase.count >= start && Disfluency.matches(phrase, in: words, at: p - phrase.count) {
+                return p
+            }
+        }
+        return nil
+    }
+
     /// Whether an ordinal marker for list position `position` (0-based) starts at `i`; returns its word count.
     private static func marker(_ words: Words, at i: Int, position: Int) -> Int? {
         guard position < ordinals.count, isClauseStart(words, at: i) else { return nil }

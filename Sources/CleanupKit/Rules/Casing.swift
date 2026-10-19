@@ -43,7 +43,8 @@ enum Casing {
     /// Pattern → template, in order: no space before punctuation, single spaces, no spaces around line breaks, and
     /// one mark where passes left two (",." → ".", ".," → "." except after "e.g.", ",," → ",", ".." → ".", "?." → "?").
     private static let tidyRules: [(NSRegularExpression, String)] = [
-        (#"[ \t]+([,.!?;:…)\]])"#, "$1"),
+        // A dot that starts a name stays apart (".venv", ".map").
+        (#"[ \t]+([,!?;:…)\]]|\.(?![\p{L}\p{N}]))"#, "$1"),
         (#"[ \t]{2,}"#, " "),
         (#"[ \t]*\n[ \t]*"#, "\n"),
         (#"[,;:]+[ \t]*([.!?])"#, "$1"),
@@ -87,11 +88,13 @@ enum Style {
 
     /// Applies the style's capitals and end punctuation to finished English text.
     /// `openEnd`: the text ends with a placeholder for a one-line snippet that reads like words ("…to 1 Main St").
-    static func apply(_ text: String, style: WritingStyle, category: AppCategory, keep: Set<String>, openEnd: Bool = false) -> String {
+    static func apply(_ text: String, style: WritingStyle, category: AppCategory, keep: Set<String>, openEnd: Bool = false,
+                      continuing: Bool = false) -> String {
         guard !text.isEmpty else { return text }
         var text = text
         if style == .veryCasual { text = Casing.lowercaseSentenceStarts(text, keep: keep) }
-        let question = endsWithQuestion(text)
+        // A dictation that continues a sentence already in the field does not start a question ("…price, which is…").
+        let question = endsWithQuestion(text) && !(continuing && !Words(text).items.dropFirst().contains { Gap.endsSentence($0.gap) })
         let open = openEnd || endsOpen(text)
         let lastIsList = lastLineIsListItem(text)
         switch style {
@@ -132,7 +135,10 @@ enum Style {
     static func endsWithQuestion(_ text: String) -> Bool {
         let words = Words(text)
         guard words.count > 0 else { return false }
-        let start = words.sentenceStart(of: words.count - 1)
+        var start = words.sentenceStart(of: words.count - 1)
+        // Look past discourse openers ("Also, can you…", "So what's…").
+        let openers: Set<String> = ["also", "and", "so", "but", "hey", "ok", "okay", "oh", "well", "then", "um", "plus"]
+        while start + 2 < words.count && openers.contains(words[start].lower) { start += 1 }
         let first = words[start].lower
         let second = start + 1 < words.count ? words[start + 1].lower : nil
         return Lexicon.isQuestion(firstWord: first, secondWord: second)

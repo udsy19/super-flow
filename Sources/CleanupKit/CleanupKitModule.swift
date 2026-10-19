@@ -97,8 +97,7 @@ public final class TextCleaner: TextCleaning {
 
         let category = input.context.app?.category ?? .other
         let inputTokens = Prompts.estimatedTokens(prepared.text)
-        let turn = Prompts.cleanupTurn(prepared.text, hints: pass.vocabulary.hints, beforeCursor: input.context.textBefore,
-                                       thinkBlock: Prompts.usesThinkBlock(modelID: modelID))
+        let turn = Prompts.cleanupTurn(prepared.text, hints: pass.vocabulary.hints, thinkBlock: Prompts.usesThinkBlock(modelID: modelID))
         if budget <= 0 || expectedSeconds(prefill: Prompts.estimatedTokens(turn), decode: inputTokens) > budget {
             return rulesOnly(.timeout)
         }

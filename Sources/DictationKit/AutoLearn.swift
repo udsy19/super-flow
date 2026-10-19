@@ -94,21 +94,8 @@ public enum AutoLearn {
         let plainHeard = heard.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
         let plainWritten = written.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
         if plainHeard == plainWritten { return heard != written }
-        let distance = editDistance(plainHeard, plainWritten)
+        let distance = TextDistance.edits(plainHeard, plainWritten)
         return distance <= min(3, max(1, max(heard.count, written.count) / 4))
-    }
-
-    static func editDistance(_ a: String, _ b: String) -> Int {
-        let x = Array(a), y = Array(b)
-        var previous = Array(0...y.count)
-        for i in 1...max(1, x.count) where i <= x.count {
-            var current = [i] + [Int](repeating: 0, count: y.count)
-            for j in 1...max(1, y.count) where j <= y.count {
-                current[j] = min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (x[i - 1] == y[j - 1] ? 0 : 1))
-            }
-            previous = current
-        }
-        return previous[y.count]
     }
 
     /// Words a correction never targets.

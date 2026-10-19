@@ -71,12 +71,15 @@ enum SpokenCommands {
 
     static func apply(_ words: inout Words) {
         var i = 0
+        // The index whose gap holds punctuation the user dictated ("Dear team comma new paragraph").
+        var dictatedGap: Int?
         while i < words.count {
             if words[i].isPlaceholder { i += 1; continue }
             if let length = allCaps(&words, at: i) { i += length; continue }
             guard let command = commands.first(where: { Disfluency.matches($0.phrase, in: words, at: i) }),
                   !(command.isAlsoAWord && readsAsNoun(words, at: i, length: command.phrase.count)) else { i += 1; continue }
-            insert(command.mark, replacing: i..<i + command.phrase.count, in: &words)
+            insert(command.mark, replacing: i..<i + command.phrase.count, in: &words, keepDictated: dictatedGap == i)
+            if case .closing = command.mark { dictatedGap = i } else { dictatedGap = nil }
         }
     }
 
@@ -87,11 +90,11 @@ enum SpokenCommands {
         return next < words.count && nounFollowers.contains(words[next].lower) && Gap.isSpace(words[next].gap)
     }
 
-    private static func insert(_ mark: Mark, replacing range: Range<Int>, in words: inout Words) {
+    private static func insert(_ mark: Mark, replacing range: Range<Int>, in words: inout Words, keepDictated: Bool = false) {
         // Punctuation the speech engine put around the spoken command is replaced by the command itself, except a
         // sentence end before a layout command ("Hello. New paragraph." keeps its period).
         let before = range.lowerBound > 0 ? words[range.lowerBound].gap : ""
-        let kept = before.filter { ".!?".contains($0) }
+        let kept = before.filter { (keepDictated ? ".!?,;:" : ".!?").contains($0) }
         let separator: String
         var attachNext = false
         switch mark {
