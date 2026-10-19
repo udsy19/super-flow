@@ -1,0 +1,44 @@
+name: Feature request
+description: An idea for something Super Flow should do.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The situation, not the solution. Where do you dictate, what gets in the way?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like Super Flow to do?
+      description: How it would look or behave; which shortcut, page or setting it would live under.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What do you do today instead?
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Dictation and shortcuts
+        - Cleanup, styles and formatting
+        - Dictionary and snippets
+        - Command Mode and Transforms
+        - Notetaker and meetings
+        - Models and languages
+        - Flow Bar
+        - Hub and Settings
+        - Privacy
+        - Website or docs
+        - Other
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy
+      options:
+        - label: This would need network access or a new permission (say which, above).

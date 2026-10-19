@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security issue
+    url: https://github.com/udsy19/super-flow/security/advisories/new
+    about: Report a vulnerability privately. Please don't open a public issue for it.
+  - name: How it works
+    url: https://github.com/udsy19/super-flow/blob/main/README.md
+    about: Permissions, Fn gestures, features, models and their sizes.
