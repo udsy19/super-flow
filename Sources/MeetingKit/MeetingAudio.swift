@@ -244,6 +244,15 @@ public enum MeetingAudioFiles {
         return fromSample > 0 ? Array(all[fromSample...]) : all
     }
 
+    /// Seconds recorded in the folder: the longest channel, in chunks or in its final file.
+    public static func recordedDuration(folder: URL) -> TimeInterval {
+        AudioChannel.allCases.map { channel -> TimeInterval in
+            let chunked = ChunkedTrackWriter.chunks(in: folder, channel: channel).reduce(0) { $0 + ChunkedTrackWriter.sampleCount(of: $1) }
+            let encoded = existingTrack(folder: folder, channel: channel)?.duration ?? 0
+            return max(Double(chunked) / Double(AudioClip.sampleRate), encoded)
+        }.max() ?? 0
+    }
+
     private static func existingTrack(folder: URL, channel: AudioChannel) -> AudioTrack? {
         let url = folder.appendingPathComponent(fileName(channel))
         guard let file = try? AVAudioFile(forReading: url) else { return nil }

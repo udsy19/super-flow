@@ -595,28 +595,24 @@ public final class MeetingRecorder: MeetingRecording {
         let folders = (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: [.creationDateKey])) ?? []
         for folder in folders {
             guard let id = UUID(uuidString: folder.lastPathComponent), id != session?.meeting.id, processing[id] == nil else { continue }
-            let samples = AudioChannel.allCases.map { channel in
-                ChunkedTrackWriter.chunks(in: folder, channel: channel).reduce(0) { $0 + ChunkedTrackWriter.sampleCount(of: $1) }
-            }.max() ?? 0
             let chunks = AudioChannel.allCases.contains { !ChunkedTrackWriter.chunks(in: folder, channel: $0).isEmpty }
-            let finals = AudioChannel.allCases.contains { fm.fileExists(atPath: folder.appendingPathComponent(MeetingAudioFiles.fileName($0)).path) }
             var meeting: Meeting
             if let row = Services.meetings.meeting(id) {
                 guard chunks else { continue }
                 meeting = row
             } else {
-                // Less than a second of audio and no final file: nothing anyone could want.
-                guard samples >= AudioClip.sampleRate || finals else {
+                // Less than a second of audio: nothing anyone could want.
+                let duration = MeetingAudioFiles.recordedDuration(folder: folder)
+                guard duration >= 1 else {
                     try? fm.removeItem(at: folder)
                     continue
                 }
-                let duration = Double(samples) / Double(AudioClip.sampleRate)
                 let created = (try? folder.resourceValues(forKeys: [.creationDateKey]))?.creationDate ?? Date().addingTimeInterval(-duration)
                 meeting = Meeting(id: id, title: MeetingNotices.recoveredTitle(created), startedAt: created)
                 Log.meetings.info("Recovering audio without a meeting row: \(id, privacy: .public)")
             }
             if meeting.endedAt == nil {
-                meeting.endedAt = meeting.startedAt.addingTimeInterval(Double(samples) / Double(AudioClip.sampleRate))
+                meeting.endedAt = meeting.startedAt.addingTimeInterval(MeetingAudioFiles.recordedDuration(folder: folder))
             }
             do { try Services.meetings.save(meeting) } catch {
                 Log.meetings.error("Couldn't save the recovered meeting \(id, privacy: .public): \(error.localizedDescription, privacy: .public)")

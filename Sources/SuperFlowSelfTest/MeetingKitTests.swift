@@ -690,6 +690,13 @@ private func speakerLines(_ meeting: Meeting) -> [String] {
     let lostID = UUID()
     let lost = SuperFlowPaths.meetingAudio(lostID)
     for channel in AudioChannel.allCases { try? ChunkedTrackWriter(folder: lost, channel: channel).append(MeetingFixture.track(channel)) }
+    // And one that had already been encoded into its final files before its row was lost.
+    let encodedID = UUID()
+    let encoded = SuperFlowPaths.meetingAudio(encodedID)
+    for channel in AudioChannel.allCases {
+        try? ChunkedTrackWriter(folder: encoded, channel: channel).append(MeetingFixture.track(channel))
+        _ = try? MeetingAudioFiles.finalize(folder: encoded, channel: channel)
+    }
 
     recorder.recoverInterruptedMeetings()
     _ = complete(60) { await recorder.waitForProcessing() }
@@ -703,7 +710,11 @@ private func speakerLines(_ meeting: Meeting) -> [String] {
     check(recovered?.title.hasPrefix("Recovered recording from ") == true && recovered?.segments.map(\.text) == MeetingFixture.utterances.map(\.text)
               && recovered?.tracks.count == 2 && abs((recovered?.endedAt?.timeIntervalSince(recovered?.startedAt ?? Date()) ?? 0) - MeetingFixture.length) < 0.1,
           "audio without a row becomes a recovered meeting with its transcript: \(String(describing: recovered?.title))")
-    check(fakes.flowBar.notifications.filter { $0.id == "meeting.recovered" }.count >= 2, "a card says each recording was recovered")
+    let reencoded = fakes.store.rows[encodedID]
+    check(reencoded?.title.hasPrefix("Recovered recording from ") == true && reencoded?.tracks.count == 2
+              && abs((reencoded?.duration ?? 0) - MeetingFixture.length) < 0.2 && reencoded?.segments.count == MeetingFixture.utterances.count,
+          "final files without a row are recovered too, with their length and transcript: \(String(describing: reencoded?.duration)) \(reencoded?.segments.count ?? -1)")
+    check(fakes.flowBar.notifications.filter { $0.id == "meeting.recovered" }.count >= 3, "a card says each recording was recovered")
     check(recorder.state == .idle, "idle after recovery")
 }
 
