@@ -20,13 +20,14 @@ enum Guardrails {
         "know", "well", "oh", "hey", "hi", "hello",
     ])
 
-    /// Bounds per cleanup level: output/input word ratio and the share of new content words allowed. Medium and high
-    /// rephrase by design, so they tolerate more new words; high also shortens.
-    private static func limits(_ level: CleanupLevel) -> (ratio: ClosedRange<Double>, novel: Double) {
+    /// Bounds per cleanup level: output/input word ratio, the share of new content words allowed, and the share of the
+    /// input's content words that may go missing. Medium and high rephrase by design, so they tolerate more new and
+    /// missing words; high also shortens.
+    private static func limits(_ level: CleanupLevel) -> (ratio: ClosedRange<Double>, novel: Double, dropped: Double) {
         switch level {
-        case .none, .light: (0.5...1.25, 0.15)
-        case .medium: (0.5...1.25, 0.25)
-        case .high: (0.35...1.25, 0.4)
+        case .none, .light: (0.5...1.25, 0.15, 0.25)
+        case .medium: (0.5...1.25, 0.25, 0.35)
+        case .high: (0.35...1.25, 0.4, 0.6)
         }
     }
 
@@ -42,7 +43,7 @@ enum Guardrails {
            !input.lowercased().hasPrefix(opener.split(separator: " ").first.map(String.init) ?? opener) {
             return .failure(Rejection(.hallucination, "assistant reply"))
         }
-        let (ratio, novelShare) = limits(level)
+        let (ratio, novelShare, droppedShare) = limits(level)
         let n = Double(inputWords.count), m = Double(outputWords.count)
         let upper = max((ratio.upperBound * n).rounded(.up), n + 2)
         if m < (ratio.lowerBound * n).rounded(.down) || m > upper {
@@ -53,6 +54,13 @@ enum Guardrails {
         let novel = content.filter { stems($0).isDisjoint(with: known) }
         if Double(novel.count) > max(1, novelShare * Double(content.count)) {
             return .failure(Rejection(.hallucination, "new words: \(novel.prefix(5).joined(separator: ", "))"))
+        }
+        // Nothing the user said may quietly disappear: a clause the model left out passes the length check on its own.
+        let written = outputWords.reduce(into: Set<String>()) { $0.formUnion(stems($1)) }
+        let said = inputWords.filter { !stopWords.contains($0) && !NumberWords.isNumeric($0) }
+        let lost = said.filter { stems($0).isDisjoint(with: written) }
+        if Double(lost.count) > max(1, droppedShare * Double(said.count)) {
+            return .failure(Rejection(.hallucination, "dropped words: \(lost.prefix(5).joined(separator: ", "))"))
         }
         // A dictated question comes back as a question, not as an answer.
         if let first = inputWords.first, Lexicon.isQuestion(firstWord: first, secondWord: inputWords.dropFirst().first),

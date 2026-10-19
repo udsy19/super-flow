@@ -23,10 +23,14 @@ public final class TextCleaner: TextCleaning {
     private var prefillRate: Double?
     private var decodeRate: Double?
     /// Wall-time cap for Transforms and Command Mode (longer outputs than cleanup, local-models.md §3.4); it stops
-    /// runaway generation, it is not a target.
-    static let transformBudget: TimeInterval = 60
+    /// runaway generation, it is not a target. The self-test shortens it.
+    public var transformBudget: TimeInterval = 60
     /// Wall-time cap for `generate` (meeting notes over a chunk of transcript on the notes model).
-    static let generateBudget: TimeInterval = 180
+    public var generateBudget: TimeInterval = 180
+    /// How long past its budget a request is waited for. The model checks its deadline only while decoding, so a long
+    /// prefill, a hung call, or a model busy with another request (meeting notes) could otherwise hold the caller for
+    /// minutes; after this the caller gets the fallback and the call finishes on its own.
+    static let hardTimeoutGrace: TimeInterval = 0.5
 
     /// `model` is an already-loaded cleanup model (the self-test passes its own); the app loads models with
     /// `prepare(modelID:role:)`.
@@ -101,7 +105,13 @@ public final class TextCleaner: TextCleaning {
         let request = LLMRequest(prefix: Prompts.cleanupPrefix(style: input.style, level: input.level, category: category), turn: turn,
                                  maxTokens: Int(Double(inputTokens) * 1.5) + 16, deadline: Date().addingTimeInterval(budget))
         let result: LLMResult
-        do { result = try await model.complete(request) } catch {
+        do {
+            guard let answered = try await Self.awaitWithin(budget + Self.hardTimeoutGrace, { try await model.complete(request) }) else {
+                Log.cleanup.error("Cleanup LLM didn't answer within its budget; using the rules text")
+                return rulesOnly(.timeout)
+            }
+            result = answered
+        } catch {
             Log.cleanup.error("Cleanup LLM failed: \(error.localizedDescription, privacy: .public)")
             return rulesOnly(.error)
         }
@@ -130,9 +140,16 @@ public final class TextCleaner: TextCleaning {
         let request = LLMRequest(prefix: Prompts.transformPrefix(intent, hasText: !selection.isEmpty),
                                  turn: Prompts.transformTurn(selection, instruction: instruction, thinkBlock: Prompts.usesThinkBlock(modelID: modelID)),
                                  maxTokens: Int(Double(inputTokens) * intent.outputFactor) + 64,
-                                 deadline: Date().addingTimeInterval(Self.transformBudget))
+                                 deadline: Date().addingTimeInterval(transformBudget))
         let result: LLMResult
-        do { result = try await model.complete(request) } catch {
+        do {
+            guard let answered = try await Self.awaitWithin(transformBudget + Self.hardTimeoutGrace, { try await model.complete(request) }) else {
+                throw TransformError.timedOut
+            }
+            result = answered
+        } catch let error as TransformError {
+            throw error
+        } catch {
             Log.cleanup.error("Transform failed: \(error.localizedDescription, privacy: .public)")
             throw TransformError.failed
         }
@@ -149,9 +166,17 @@ public final class TextCleaner: TextCleaning {
         let request = LLMRequest(prefix: Prompts.transformPrefix(.custom, hasText: !input.isEmpty),
                                  turn: Prompts.transformTurn(input, instruction: instruction, thinkBlock: Prompts.usesThinkBlock(modelID: loaded.id)),
                                  maxTokens: Int(Double(inputTokens) * 1.5) + 256,
-                                 deadline: Date().addingTimeInterval(Self.generateBudget))
+                                 deadline: Date().addingTimeInterval(generateBudget))
         let result: LLMResult
-        do { result = try await loaded.model.complete(request) } catch {
+        let model = loaded.model
+        do {
+            guard let answered = try await Self.awaitWithin(generateBudget + Self.hardTimeoutGrace, { try await model.complete(request) }) else {
+                throw TransformError.timedOut
+            }
+            result = answered
+        } catch let error as TransformError {
+            throw error
+        } catch {
             Log.cleanup.error("Generation failed: \(error.localizedDescription, privacy: .public)")
             throw TransformError.failed
         }
@@ -163,6 +188,19 @@ public final class TextCleaner: TextCleaning {
     }
 
     // MARK: Internals
+
+    /// The result of `work`, or nil when `seconds` pass first. The work isn't waited for after that (a llama.cpp call
+    /// can't be interrupted); it finishes on its own and its result is dropped.
+    static func awaitWithin<T: Sendable>(_ seconds: TimeInterval, _ work: @escaping @Sendable () async throws -> T) async throws -> T? {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<T?, Error>) in
+            let once = ResumeOnce(continuation)
+            Task { do { once.resume(.success(try await work())) } catch { once.resume(.failure(error)) } }
+            Task {
+                try? await Task.sleep(nanoseconds: UInt64(max(seconds, 0) * 1_000_000_000))
+                once.resume(.success(nil))
+            }
+        }
+    }
 
     /// A spoken instruction without fillers and stutters ("um make this uh more formal"). Saved prompts and MeetingKit's
     /// notes instructions are longer and pass verbatim.
@@ -190,5 +228,21 @@ public final class TextCleaner: TextCleaning {
         func average(_ old: Double?, _ new: Double) -> Double { old.map { 0.7 * $0 + 0.3 * new } ?? new }
         if result.prefilledTokens > 0, result.prefillSeconds > 0 { prefillRate = average(prefillRate, Double(result.prefilledTokens) / result.prefillSeconds) }
         if result.generatedTokens > 0, result.decodeSeconds > 0 { decodeRate = average(decodeRate, Double(result.generatedTokens) / result.decodeSeconds) }
+    }
+}
+
+/// Resumes a continuation exactly once, from whichever of two racing tasks gets there first.
+private final class ResumeOnce<T>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<T?, Error>?
+
+    init(_ continuation: CheckedContinuation<T?, Error>) { self.continuation = continuation }
+
+    func resume(_ result: Result<T?, Error>) {
+        let pending: CheckedContinuation<T?, Error>? = lock.withLock {
+            defer { continuation = nil }
+            return continuation
+        }
+        pending?.resume(with: result)
     }
 }

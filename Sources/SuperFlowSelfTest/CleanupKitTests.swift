@@ -17,6 +17,7 @@ func registerCleanupKitTests() {
     SelfTest.cases.append(("CleanupKit.llmPath", { MainActor.assumeIsolated { cleanupLLMPath() } }))
     SelfTest.cases.append(("CleanupKit.guardrails", { MainActor.assumeIsolated { cleanupGuardrails() } }))
     SelfTest.cases.append(("CleanupKit.budget", { MainActor.assumeIsolated { cleanupBudget() } }))
+    SelfTest.cases.append(("CleanupKit.hungModel", { MainActor.assumeIsolated { cleanupHungModel() } }))
     SelfTest.cases.append(("CleanupKit.transforms", { MainActor.assumeIsolated { cleanupTransforms() } }))
     SelfTest.cases.append(("CleanupKit.realModel", { MainActor.assumeIsolated { cleanupRealModel() } }))
 }
@@ -318,6 +319,14 @@ private func transcript(of request: LLMRequest) -> String {
     let snippet = Snippet(trigger: "my address", expansion: "1 Infinite Loop")
     let dropped = run("please ship the parcel to my address", snippets: [snippet], cleaner: TextCleaner(model: ScriptedModel(text: "Please ship the parcel.")))
     check(dropped.skipReason == .hallucination && dropped.text == "Please ship the parcel to 1 Infinite Loop.", "a dropped placeholder is rejected")
+    // A clause the model leaves out passes the length check on its own; the dropped content words don't.
+    let clause = "please send the report to the team by friday and also book the meeting room for monday"
+    let shortened = run(clause, cleaner: TextCleaner(model: ScriptedModel(text: "Please send the report to the team by Friday.")))
+    check(shortened.skipReason == .hallucination && shortened.text.contains("Monday"), "a dropped clause is rejected: \(shortened.text)")
+    check(reason("Please send the report to the team by Friday and book the meeting room for Monday.", for: clause) == nil,
+          "dropping only a filler-like word passes")
+    check(reason("Send the report to the team Friday and book the room Monday.", for: clause, level: .high) == nil,
+          "high cleanup may tighten the wording")
     let failing = ScriptedModel { _ in throw SpeechError.failed("boom") }
     let failed = run("please send the report to the team by friday", cleaner: TextCleaner(model: failing))
     check(failed.skipReason == .error && failed.text == rulesText, "runtime error: rules text")
@@ -337,6 +346,40 @@ private func transcript(of request: LLMRequest) -> String {
     let output = run(input, cleaner: TextCleaner(model: late), budget: 0.6)
     check(output.skipReason == .timeout && output.text == rules(input), "a deadline hit mid-decode keeps the rules text")
     check(late.requests.first.map { $0.deadline.timeIntervalSinceNow < 0.7 } == true, "the deadline is the budget")
+}
+
+/// A model that doesn't answer in time: hung inside llama.cpp, or busy with a long meeting-notes request.
+private final class HungModel: CleanupLanguageModel, @unchecked Sendable {
+    func warm(prefix: String) async throws {}
+    func complete(_ request: LLMRequest) async throws -> LLMResult {
+        try await Task.sleep(nanoseconds: 20_000_000_000)
+        return LLMResult(text: "far too late")
+    }
+    func unload() async {}
+}
+
+/// Every LLM call has a hard wall-clock limit: dictation gets the rules text, a Transform or the notes get a timeout
+/// error, all within moments of their budget.
+@MainActor private func cleanupHungModel() {
+    let cleaner = TextCleaner(model: HungModel())
+    let input = "please send the report to the team by friday"
+    var started = Date()
+    let output = run(input, cleaner: cleaner, budget: 0.5)
+    check(output.skipReason == .timeout && output.text == rules(input) && Date().timeIntervalSince(started) < 2.5,
+          "a hung model: the rules text, on time (\(Date().timeIntervalSince(started)) s)")
+    cleaner.transformBudget = 0.5
+    started = Date()
+    if case .failure(let error)? = complete(10, { try await cleaner.transform("hey send it over", instruction: "make this more formal") }) {
+        check(error as? TransformError == .timedOut && Date().timeIntervalSince(started) < 2.5, "a hung Transform times out: \(error)")
+    } else { check(false, "a hung Transform must time out") }
+    cleaner.generateBudget = 0.5
+    guard case .success? = complete(10, { try await cleaner.prepare(modelID: ModelCatalog.qwen35_2B.id, role: .notes) }) else {
+        check(false, "the notes role shares the loaded model"); return
+    }
+    started = Date()
+    if case .failure(let error)? = complete(10, { try await cleaner.generate("the transcript", instruction: "write notes", role: .notes) }) {
+        check(error as? TransformError == .timedOut && Date().timeIntervalSince(started) < 2.5, "hung notes time out: \(error)")
+    } else { check(false, "hung notes must time out") }
 }
 
 @MainActor private func cleanupTransforms() {

@@ -57,3 +57,7 @@ All notable changes to Super Flow are recorded here. The format follows Keep a C
 - A microphone unplugged mid-dictation finishes the dictation with what was heard instead of listening to nothing; a
   cleanup model that is installed but won't load says so once while dictation carries on with the rules.
 - Audio files are read to the end: a single read stopped at the last whole 1024-frame packet and dropped the tail.
+- Every local-LLM call has a hard wall-clock limit: a hung model, a long prefill, or a model busy with meeting notes
+  can no longer hold a dictation; it gets the rules-only text within half a second of its budget, and Transforms and
+  notes fail with "timed out" instead of waiting for minutes. A cleanup that leaves out part of what was said (a
+  dropped clause the length check alone accepted) is rejected in favour of the rules text.
