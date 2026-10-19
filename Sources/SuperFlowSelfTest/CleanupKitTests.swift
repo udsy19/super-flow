@@ -408,6 +408,11 @@ private func transcript(of request: LLMRequest) -> String {
           "'had had' may not be tidied away")
     check(reason("Call me at 555-123-4567 after lunch.", for: "call me at five five five one two three four five six seven after lunch") == nil,
           "a phone number written in digits passes the word ratio")
+    // Never translated: a whole sentence in another language is rejected; a borrowed word is not.
+    check(reason("I would like to book a table for four people tonight.", for: "je voudrais réserver une table pour quatre personnes ce soir")
+          == .hallucination, "a translation is rejected")
+    check(reason("Let's meet mañana at the café near the office.", for: "let's meet mañana at the café near the office") == nil,
+          "a borrowed word stays")
     let failing = ScriptedModel { _ in throw SpeechError.failed("boom") }
     let failed = run("please send the report to the team by friday", cleaner: TextCleaner(model: failing))
     check(failed.skipReason == .error && failed.text == rulesText, "runtime error: rules text")

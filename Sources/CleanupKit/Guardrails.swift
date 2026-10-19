@@ -1,4 +1,5 @@
 import Foundation
+import NaturalLanguage
 import SuperFlowCore
 
 /// Checks on what the LLM wrote (local-models.md §3.6). Any failure means the rules-only text is inserted instead, with
@@ -80,6 +81,10 @@ enum Guardrails {
            !text.contains("?"), outputWords.first != first {
             return .failure(Rejection(.hallucination, "answered a question"))
         }
+        // Never translated (cleanup-quality.md §9): both sides clearly in one language each, and not the same one.
+        if inputWords.count >= 5, let said = clearLanguage(input), let written = clearLanguage(text), said != written {
+            return .failure(Rejection(.hallucination, "language changed: \(said.rawValue) → \(written.rawValue)"))
+        }
         return .success(text)
     }
 
@@ -128,6 +133,14 @@ enum Guardrails {
         return Words(unlisted).items.filter { !$0.isPlaceholder }.map {
             $0.text.lowercased().folding(options: .diacriticInsensitive, locale: nil).replacingOccurrences(of: "’", with: "'")
         }
+    }
+
+    /// The language of a text when the recogniser is sure of it (≥ 90%), else nil (short, mixed or unclear text).
+    private static func clearLanguage(_ text: String) -> NLLanguage? {
+        let recognizer = NLLanguageRecognizer()
+        recognizer.processString(text)
+        guard let (language, probability) = recognizer.languageHypotheses(withMaximum: 1).first, probability >= 0.9 else { return nil }
+        return language
     }
 
     /// The word count with each run of number words, and each written number, counted once.
