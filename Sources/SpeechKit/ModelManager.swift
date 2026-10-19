@@ -91,7 +91,7 @@ public final class ModelManager: ModelManaging {
             plan.insert(chosen, at: plan.firstIndex { $0.kind == chosen.kind } ?? (chosen.kind == .asr ? 0 : plan.count))
         }
         if bundledCopy(of: ModelCatalog.sileroVAD) == nil { plan.insert(ModelCatalog.sileroVAD, at: 0) }
-        let languages = SpeechLanguages.requested(selected: Defaults[.selectedLanguages], autoDetect: Defaults[.autoDetectLanguage])
+        let languages = SupportedLanguages.chosen
         if preset.dictation.contains(where: { $0.engine == "fluidaudio" && $0.kind == .asr }), !SupportedLanguages.parakeetCovers(languages),
            let fallback = ModelCatalog.descriptor(Defaults[.fallbackASRModelID]) {
             let lastASR = plan.lastIndex { $0.kind == .asr } ?? -1

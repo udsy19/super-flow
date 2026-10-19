@@ -6,7 +6,7 @@ import SuperFlowCore
 
 // MARK: - Transcript blocks (behaviour.md §20.7.5; the export itself is `MeetingExport` in Core)
 
-/// Consecutive final segments by one speaker.
+/// Consecutive segments by one speaker: final ones, plus the words still being spoken while the meeting records.
 public struct TranscriptGroup: Identifiable, Equatable, Sendable {
     public var id: UUID
     public var speaker: String
@@ -14,20 +14,23 @@ public struct TranscriptGroup: Identifiable, Equatable, Sendable {
     public var ordinal: Int
     public var start: TimeInterval
     public var lines: [String]
+    /// Indexes into `lines` that are live partials, which the next decode replaces.
+    public var liveLines: Set<Int> = []
 
-    public static func make(_ meeting: Meeting) -> [TranscriptGroup] {
+    public static func make(_ meeting: Meeting, includeLive: Bool = false) -> [TranscriptGroup] {
         var groups: [TranscriptGroup] = []
         var order: [String] = []
-        for segment in meeting.segments.filter(\.isFinal).sorted(by: { $0.start < $1.start }) {
+        for segment in meeting.segments.filter({ $0.isFinal || includeLive }).sorted(by: { $0.start < $1.start }) {
             let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { continue }
             let name = meeting.speakerLabel(for: segment)
             if !order.contains(name) { order.append(name) }
             if let last = groups.indices.last, groups[last].speaker == name {
+                if !segment.isFinal { groups[last].liveLines.insert(groups[last].lines.count) }
                 groups[last].lines.append(text)
             } else {
                 groups.append(TranscriptGroup(id: segment.id, speaker: name, ordinal: order.firstIndex(of: name) ?? 0, start: segment.start,
-                                              lines: [text]))
+                                              lines: [text], liveLines: segment.isFinal ? [] : [0]))
             }
         }
         return groups
@@ -452,8 +455,11 @@ struct MeetingTranscriptView: View {
     let meeting: Meeting
 
     var body: some View {
-        let groups = TranscriptGroup.make(meeting)
-        if groups.isEmpty, MeetingRetry.canRetryTranscript(meeting) {
+        let groups = TranscriptGroup.make(meeting, includeLive: MeetingRecordingState.isActive(meeting.id))
+        if groups.isEmpty, MeetingRecordingState.isActive(meeting.id) {
+            EmptyState(symbol: "waveform", title: "Listening",
+                       message: "The transcript appears here a moment after each sentence.")
+        } else if groups.isEmpty, MeetingRetry.canRetryTranscript(meeting) {
             // The speech engine failed or wasn't ready: the audio is kept, so it can be transcribed again.
             EmptyState(symbol: "text.quote", title: "No transcript",
                        message: "Nothing was transcribed for this meeting. The audio is saved, so you can try again.",
@@ -481,7 +487,7 @@ struct MeetingTranscriptView: View {
                             ForEach(Array(group.lines.enumerated()), id: \.offset) { index, line in
                                 Text(line)
                                     .font(Font(SFFont.text(.sm, weight: .medium)))
-                                    .foregroundStyle(HubColor.foreground)
+                                    .foregroundStyle(group.liveLines.contains(index) ? HubColor.tertiary : HubColor.foreground)
                                     .lineSpacing(4)
                                     .textSelection(.enabled)
                                     .padding(.horizontal, 12)

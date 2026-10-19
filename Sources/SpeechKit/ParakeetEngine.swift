@@ -43,11 +43,35 @@ public actor ParakeetEngine {
         let result = try await manager.transcribe(samples, decoderState: &state, language: hint)
         let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let timings = result.tokenTimings ?? []
-        let start = clip.startTime + (timings.first?.startTime ?? 0)
-        let end = clip.startTime + (timings.last?.endTime ?? clip.duration)
-        let segments = text.isEmpty ? [] : [TranscriptSegment(start: start, end: max(start, end), text: text)]
+        var segments = Self.phrases(buildWordTimings(from: timings), offset: clip.startTime)
+        if segments.isEmpty, !text.isEmpty {
+            let start = clip.startTime + (timings.first?.startTime ?? 0)
+            let end = clip.startTime + (timings.last?.endTime ?? clip.duration)
+            segments = [TranscriptSegment(start: start, end: max(start, end), text: text)]
+        }
         return Transcript(text: text, language: language.map(SupportedLanguages.base) ?? "", confidence: Double(result.confidence),
-                          segments: segments)
+                          segments: text.isEmpty ? [] : segments)
+    }
+
+    /// A pause this long between two words starts a new phrase.
+    static let phrasePause: TimeInterval = 0.6
+
+    /// Words grouped into phrases at pauses, so a long clip (a meeting re-read in 30 s windows) keeps its timeline.
+    static func phrases(_ words: [WordTiming], offset: TimeInterval) -> [TranscriptSegment] {
+        var phrases: [TranscriptSegment] = []
+        var current: [WordTiming] = []
+        func close() {
+            guard let first = current.first, let last = current.last else { return }
+            phrases.append(TranscriptSegment(start: offset + first.startTime, end: offset + max(first.startTime, last.endTime),
+                                             text: current.map(\.word).joined(separator: " ")))
+            current = []
+        }
+        for word in words {
+            if let last = current.last, word.startTime - last.endTime >= phrasePause { close() }
+            current.append(word)
+        }
+        close()
+        return phrases
     }
 
     public func unload() async {

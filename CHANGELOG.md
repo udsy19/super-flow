@@ -7,6 +7,8 @@ All notable changes to Super Flow are recorded here. The format follows Keep a C
 ## [1.0.0] - 2026-10-19
 
 ### Added
+- Live meeting transcript: what is being said shows on the meeting page within a couple of seconds, in grey until
+  the sentence ends, and is saved as it goes.
 - Dictation into any app: hold Fn (push-to-talk), Fn+Space or double-tap Fn (hands-free with live text), with a
   300 ms pre-roll, 150 ms post-roll, streaming recognition while the key is held, and a 20-minute session limit.
 - Local speech: Parakeet TDT 0.6B v3 on the Neural Engine (25 languages), Whisper as the multilingual fallback and
@@ -41,6 +43,14 @@ All notable changes to Super Flow are recorded here. The format follows Keep a C
   must keep 207 passes, and with the dev model the rules and Qwen3.5-2B must pass 90% (they pass 93.7%).
 
 ### Fixed
+- Meetings caught almost nothing a quiet laptop microphone heard (2 of ~80 words on a real call). Each track is now
+  levelled before speech detection, pauses and onsets are tuned for quiet speakers, every ~30 s of a track is decoded
+  again with context, and the end of each track is kept at stop.
+- A quiet microphone could come out in another language and script ("これだけ" from English speech); transcripts are held
+  to your dictation languages.
+- The microphone hearing the call through the speakers no longer repeats the far end as "You"; only true echoes are
+  dropped, never your own words.
+- After a crash, a live line could appear twice in the recovered transcript.
 - The Flow Bar follows the Dock: it sits 14 pt above the Dock at any size, at the bottom edge of the screen when the
   Dock is on a side or hidden, and drops to the bottom edge in a full-screen app (Split View included), gliding
   between the two as the space, the app in front, the displays or the Dock's settings change.

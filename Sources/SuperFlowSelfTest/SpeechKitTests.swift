@@ -177,8 +177,8 @@ private func testModel(_ id: String, data: Data, kind: ModelKind = .llm, sha: St
 
 private func speechLanguages() {
     check(SupportedLanguages.base("en-US") == "en" && SupportedLanguages.base("pt_BR") == "pt" && SupportedLanguages.base("FR") == "fr", "base codes")
-    check(SpeechLanguages.requested(selected: ["en-US", "en", "fr"], autoDetect: false) == ["en", "fr"], "selected languages, de-duplicated")
-    check(SpeechLanguages.requested(selected: ["en"], autoDetect: true).isEmpty, "auto-detect asks for everything")
+    check(SupportedLanguages.requested(selected: ["en-US", "en", "fr"], autoDetect: false) == ["en", "fr"], "selected languages, de-duplicated")
+    check(SupportedLanguages.requested(selected: ["en"], autoDetect: true).isEmpty, "auto-detect asks for everything")
     check(SupportedLanguages.parakeetCovers(["en", "de", "uk"]) && !SupportedLanguages.parakeetCovers(["en", "hi"]) && !SupportedLanguages.parakeetCovers([]),
           "Parakeet covers its 25 languages only, never auto-detect")
     check(TextLanguage.identify("Bonjour, je voudrais réserver une table pour ce soir.", among: ["en", "fr"]).language == "fr", "French text")

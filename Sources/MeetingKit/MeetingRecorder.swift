@@ -23,9 +23,13 @@ public enum MeetingRecorderError: LocalizedError, Equatable {
 }
 
 /// Dual-track meeting recording (behaviour.md §20.4–§20.7, local-models.md §8.2–§8.4): the microphone ("You") and
-/// system audio ("Them") are written to disk as they arrive, cut into utterances, transcribed with the shared speech
-/// engine at meeting priority, and saved to the store every few seconds. Stopping runs the post-meeting stages in the
-/// background: the last transcriptions, speaker split of the "Them" track, final audio files, and the notes.
+/// system audio ("Them") are written to disk as they arrive, levelled, cut into utterances and transcribed with the
+/// shared speech engine at meeting priority, in the user's dictation languages. While someone speaks, the open utterance
+/// is decoded every `partialInterval` for the live view; each closed utterance becomes a final segment at once; every
+/// 30 s or so of a track is decoded again in one window with context, and that refined text replaces the live segments
+/// it covers. Microphone segments that only echo the far end are dropped. The transcript is saved to the store every few
+/// seconds. Stopping lets the frames already captured in, closes and refines the rest, then runs the post-meeting stages
+/// in the background: speaker split of the "Them" track, final audio files, and the notes.
 @MainActor
 public final class MeetingRecorder: MeetingRecording {
     public static let shared = MeetingRecorder()
@@ -53,6 +57,12 @@ public final class MeetingRecorder: MeetingRecording {
     public var monitorInterval: TimeInterval = 5
     /// No microphone frame for this long: the microphone is restarted once (its device went away or changed).
     public var micSilenceLimit: TimeInterval = 10
+    /// While an utterance is being spoken, its text so far is decoded again each time it grew this much (the first time
+    /// at `partialInterval` too), when the live transcript is shown and the channel has nothing else queued.
+    public var partialInterval: TimeInterval = 1.5
+    /// The rolling notes only read transcript this far behind the newest segment: by then the refine pass has replaced
+    /// the live text, so the notes of a chunk are found again at the end.
+    static let settledLag: TimeInterval = 60
 
     private let stateSubject = CurrentValueSubject<MeetingRecordingState, Never>(.idle)
     private var liveSubscribers: [UUID: AsyncStream<TranscriptSegment>.Continuation] = [:]
@@ -109,7 +119,8 @@ public final class MeetingRecorder: MeetingRecording {
                               calendarEventID: event?.id, participants: event?.attendees ?? [])
         let session = RecordingSession(meeting: meeting, detectedID: detected?.id, folder: SuperFlowPaths.meetingAudio(meeting.id))
         session.lock = WriterLock(session.folder.appendingPathComponent(RecordingSession.lockName))
-        session.vocabulary = vocabulary(for: meeting)
+        session.options = options(for: meeting)
+        session.showsLive = Defaults[.notetakerLiveTranscriptEnabled]
         self.session = session
         Task { await Self.prepareSpeechEngine() }
         Task { await Self.prepareNotesModel() }
@@ -223,9 +234,12 @@ public final class MeetingRecorder: MeetingRecording {
         throw error
     }
 
-    private func vocabulary(for meeting: Meeting) -> [String] {
+    /// The user's dictation languages (a quiet microphone left to auto-detect drifts into other languages and scripts)
+    /// and the participants' names with the dictionary as vocabulary.
+    private func options(for meeting: Meeting) -> TranscriptionOptions {
         let dictionary = (Services.history?.dictionary ?? []).sorted { $0.isStarred && !$1.isStarred }.map { $0.replacement ?? $0.phrase }
-        return Array((meeting.participants.map(\.name).filter { !$0.isEmpty } + dictionary).prefix(100))
+        return TranscriptionOptions(languages: SupportedLanguages.chosen,
+                                    vocabulary: Array((meeting.participants.map(\.name).filter { !$0.isEmpty } + dictionary).prefix(100)))
     }
 
     // MARK: Live
@@ -239,27 +253,98 @@ public final class MeetingRecorder: MeetingRecording {
         let muted = frame.channel == .mic && (Services.dictation?.status.isRecording ?? false)
         let appended = await channel.append(frame.samples, at: frame.time - origin, muted: muted)
         for utterance in appended.utterances { enqueue(utterance, channel: frame.channel, in: session) }
+        if session.showsLive, let open = appended.open { schedulePartial(open, channel: frame.channel, in: session) }
         if appended.writeFailed { await stopForStorage(session) }
+    }
+
+    /// Decodes the utterance still being spoken for the live view, each time it grew `partialInterval`, while nothing
+    /// else of the channel waits for the engine. The partial carries the utterance's id; its final segment replaces it.
+    private func schedulePartial(_ open: (id: UUID, length: TimeInterval), channel: AudioChannel, in session: RecordingSession) {
+        guard session.queued[channel, default: 0] == 0, !session.partialBusy.contains(channel),
+              open.length - session.partialLength[open.id, default: 0] >= partialInterval,
+              let recorder = session.channels[channel] else { return }
+        session.partialBusy.insert(channel)
+        session.partialLength[open.id] = open.length
+        Task { [weak self] in
+            defer { session.partialBusy.remove(channel) }
+            guard let utterance = await recorder.openUtterance(), utterance.id == open.id,
+                  let speech = Services.speech else { return }
+            let clip = AudioClip(samples: utterance.samples, startTime: utterance.start)
+            guard let transcript = try? await speech.transcribe(clip, options: session.options, priority: .meeting),
+                  let self, !session.discarded, !session.closed.contains(utterance.id) else { return }
+            let text = transcript.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return }
+            let partial = TranscriptSegment(id: utterance.id, channel: channel, start: utterance.start, end: utterance.end,
+                                            text: text, isFinal: false)
+            session.meeting.segments.removeAll { $0.id == partial.id }
+            session.meeting.segments.append(partial)
+            self.publish(partial)
+            if self.session === session { self.schedulePersist(session) }
+        }
     }
 
     /// Transcribes utterances of one channel in order, one at a time.
     private func enqueue(_ utterance: Utterance, channel: AudioChannel, in session: RecordingSession) {
-        let previous = session.transcription[channel]
-        session.transcription[channel] = Task { [weak self] in
-            await previous?.value
+        session.closed.insert(utterance.id)
+        session.partialLength[utterance.id] = nil
+        chain(channel, in: session) { [weak self] in
             guard let self, !session.discarded else { return }
-            let recognition = await self.recognize(utterance, channel: channel, vocabulary: session.vocabulary)
+            let recognition = await self.recognize(utterance, channel: channel, options: session.options)
             if case .failed = recognition { session.recognitionFailures += 1 }
-            guard case .segment(let segment) = recognition, !session.discarded else { return }
-            session.meeting.segments.append(segment)
-            session.wordCount += Dictation.countWords(segment.text)
-            self.publish(segment)
-            if self.session === session, case .recording = self.state {
-                Services.flowBar?.setMeetingPhase(.recording(wordCount: session.wordCount, startedAt: session.meeting.startedAt))
+            session.meeting.segments.removeAll { $0.id == utterance.id }
+            if case .segment(var segment) = recognition {
+                segment.id = utterance.id
+                session.meeting.segments.append(segment)
+                self.publish(segment)
             }
-            self.schedulePersist(session)
-            self.scheduleRollingMap(session)
+            self.settle(session, near: utterance.start...utterance.end)
+            if let window = await session.channels[channel]?.window() { self.enqueueRefine(window, channel: channel, in: session) }
         }
+    }
+
+    /// Runs `work` after everything already queued for the channel, one at a time.
+    private func chain(_ channel: AudioChannel, in session: RecordingSession, _ work: @escaping @MainActor () async -> Void) {
+        let previous = session.transcription[channel]
+        session.queued[channel, default: 0] += 1
+        session.transcription[channel] = Task {
+            await previous?.value
+            await work()
+            session.queued[channel, default: 1] -= 1
+        }
+    }
+
+    /// The refine pass: a window of up to 30 s of one track decoded at once, with the context a single utterance lacks
+    /// (a quiet speaker is heard noticeably better). Its phrases replace the live segments of the utterances it covers,
+    /// unless it came back with less than they had (then the live text stays).
+    private func enqueueRefine(_ window: RefineWindow, channel: AudioChannel, in session: RecordingSession) {
+        chain(channel, in: session) { [weak self] in
+            guard let self, !session.discarded,
+                  case .segments(let refined) = await self.recognize(window, channel: channel, options: session.options) else { return }
+            let covered = Set(window.utteranceIDs)
+            let before = session.meeting.segments.filter { covered.contains($0.id) }.reduce(0) { $0 + Dictation.countWords($1.text) }
+            let after = refined.reduce(0) { $0 + Dictation.countWords($1.text) }
+            guard after > 0, Double(after) >= 0.8 * Double(before) else { return }
+            session.meeting.segments.removeAll { covered.contains($0.id) }
+            session.meeting.segments += refined
+            for segment in refined { self.publish(segment) }
+            self.settle(session, near: window.start...window.end)
+        }
+    }
+
+    /// After the transcript changed around `range`: drops microphone echoes of the far end, updates the word count and
+    /// the bar, and schedules the save and the rolling notes.
+    private func settle(_ session: RecordingSession, near range: ClosedRange<TimeInterval>) {
+        let echoes = MeetingEcho.echoes(in: session.meeting.segments, near: range)
+        if !echoes.isEmpty { session.meeting.segments.removeAll { echoes.contains($0.id) } }
+        session.wordCount = session.meeting.segments.filter(\.isFinal).reduce(0) { $0 + Dictation.countWords($1.text) }
+        // After stop, the post-meeting stages save the transcript once its queues are done; a save from here could land
+        // after the speakers were assigned and undo them.
+        guard self.session === session else { return }
+        if case .recording = state {
+            Services.flowBar?.setMeetingPhase(.recording(wordCount: session.wordCount, startedAt: session.meeting.startedAt))
+        }
+        schedulePersist(session)
+        scheduleRollingMap(session)
     }
 
     /// What the engine made of one utterance: a final segment, no speech (its VAD, or empty text), or an error (the
@@ -270,15 +355,42 @@ public final class MeetingRecorder: MeetingRecording {
         case failed(Error)
     }
 
-    private func recognize(_ utterance: Utterance, channel: AudioChannel, vocabulary: [String]) async -> Recognition {
+    private func recognize(_ utterance: Utterance, channel: AudioChannel, options: TranscriptionOptions) async -> Recognition {
         guard let speech = Services.speech else { return .failed(SpeechError.engineUnavailable("No speech engine.")) }
         let clip = AudioClip(samples: utterance.samples, startTime: utterance.start)
         do {
-            let transcript = try await speech.transcribe(clip, options: TranscriptionOptions(vocabulary: vocabulary), priority: .meeting)
+            let transcript = try await speech.transcribe(clip, options: options, priority: .meeting)
             let text = transcript.text.trimmingCharacters(in: .whitespacesAndNewlines)
             return text.isEmpty ? .noSpeech : .segment(TranscriptSegment(channel: channel, start: utterance.start, end: utterance.end, text: text))
         } catch SpeechError.noSpeech {
             return .noSpeech
+        } catch {
+            Log.meetings.error("Meeting transcription failed: \(error.localizedDescription, privacy: .public)")
+            return .failed(error)
+        }
+    }
+
+    private enum WindowRecognition {
+        case segments([TranscriptSegment])
+        case failed(Error)
+    }
+
+    /// A refine window as phrases on the meeting's timeline (one segment for the window when the engine gives no timing).
+    private func recognize(_ window: RefineWindow, channel: AudioChannel, options: TranscriptionOptions) async -> WindowRecognition {
+        guard let speech = Services.speech else { return .failed(SpeechError.engineUnavailable("No speech engine.")) }
+        do {
+            let transcript = try await speech.transcribe(AudioClip(samples: window.samples, startTime: window.start), options: options,
+                                                         priority: .meeting)
+            let text = transcript.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return .segments([]) }
+            let phrases = transcript.segments.count > 1 ? transcript.segments
+                : [TranscriptSegment(start: window.start, end: window.end, text: text)]
+            return .segments(phrases.compactMap { phrase in
+                let text = phrase.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                return text.isEmpty ? nil : TranscriptSegment(channel: channel, start: phrase.start, end: phrase.end, text: text)
+            })
+        } catch SpeechError.noSpeech {
+            return .segments([])
         } catch {
             Log.meetings.error("Meeting transcription failed: \(error.localizedDescription, privacy: .public)")
             return .failed(error)
@@ -291,7 +403,8 @@ public final class MeetingRecorder: MeetingRecording {
 
     private func schedulePersist(_ session: RecordingSession) {
         guard session.persistTask == nil else { return }
-        let interval = persistInterval
+        // The live transcript on the meeting page is the stored row: save it about as often as new text comes in.
+        let interval = session.showsLive ? min(persistInterval, 1.5) : persistInterval
         session.persistTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
             session.persistTask = nil
@@ -357,6 +470,10 @@ public final class MeetingRecorder: MeetingRecording {
         releaseCapture(session)
         for (channel, recorder) in session.channels {
             if let utterance = await recorder.finish() { enqueue(utterance, channel: channel, in: session) }
+            // What is left of the track gets its refine pass after the last utterance.
+            chain(channel, in: session) { [weak self] in
+                while let window = await recorder.window(force: true) { self?.enqueueRefine(window, channel: channel, in: session) }
+            }
         }
         session.meeting.endedAt = Date()
         session.persistTask?.cancel()
@@ -467,7 +584,11 @@ public final class MeetingRecorder: MeetingRecording {
         stage(id, Stage.transcribing)
         var failure: Error?
         if let live {
-            for task in live.transcription.values { await task.value }
+            // Refines queue behind the work that found them, so wait until every channel's queue stays empty.
+            while live.queued.values.contains(where: { $0 > 0 }) {
+                for task in live.transcription.values { await task.value }
+            }
+            live.meeting.segments.removeAll { !$0.isFinal }
             await live.mapTask?.value
             persist(live)
             // Utterances the engine failed on during the meeting: their audio is on disk, so transcribe it all again.
@@ -561,12 +682,13 @@ public final class MeetingRecorder: MeetingRecording {
         guard let meeting = Services.meetings.meeting(id) else { return nil }
         await Self.prepareSpeechEngine()
         await Self.prepareNotesModel()
-        let vocabulary = vocabulary(for: meeting)
+        let options = options(for: meeting)
         var added: [TranscriptSegment] = []
         var failures: [Error] = []
         var attempts = 0
         for channel in AudioChannel.allCases {
-            let lastSaved = meeting.segments.filter { $0.channel == channel }.map(\.end).max() ?? 0
+            // Live partials don't count: their words are only settled once the audio under them is decoded again.
+            let lastSaved = meeting.segments.filter { $0.channel == channel && $0.isFinal }.map(\.end).max() ?? 0
             let from = whole ? 0 : Int(lastSaved * Double(AudioClip.sampleRate))
             guard let reader = MeetingAudioReader(folder: folder, channel: channel, fromSample: from) else { continue }
             var segmenter = SpeechSegmenter(startSample: from)
@@ -574,12 +696,12 @@ public final class MeetingRecorder: MeetingRecording {
             while !ended {
                 let block = await Task.detached(priority: .utility) { reader.next() }.value
                 ended = block == nil
-                let utterances = block.map { segmenter.append($0) } ?? [segmenter.flush()].compactMap { $0 }
-                for utterance in utterances {
+                // Each utterance is decoded as part of a refine window: the context hears a quiet speaker better.
+                if let block { _ = segmenter.append(block) } else { _ = segmenter.flush() }
+                while let window = segmenter.window(force: ended) {
                     attempts += 1
-                    switch await recognize(utterance, channel: channel, vocabulary: vocabulary) {
-                    case .segment(let segment): added.append(segment)
-                    case .noSpeech: break
+                    switch await recognize(window, channel: channel, options: options) {
+                    case .segments(let segments): added += segments
                     case .failed(let error): failures.append(error)
                     }
                 }
@@ -589,8 +711,8 @@ public final class MeetingRecorder: MeetingRecording {
             let before = meeting.segments.filter(\.isFinal).reduce(0) { $0 + Dictation.countWords($1.text) }
             let after = added.reduce(0) { $0 + Dictation.countWords($1.text) }
             if failures.isEmpty || after > before { update(id) { $0.segments = added.sorted { $0.start < $1.start } } }
-        } else if !added.isEmpty {
-            update(id) { $0.segments = ($0.segments + added).sorted { $0.start < $1.start } }
+        } else {
+            update(id) { $0.segments = ($0.segments.filter(\.isFinal) + added).sorted { $0.start < $1.start } }
         }
         return attempts > 0 && failures.count == attempts ? failures.first : nil
     }
@@ -707,7 +829,16 @@ final class RecordingSession {
     let detectedID: String?
     let folder: URL
     let channels: [AudioChannel: ChannelRecorder]
-    var vocabulary: [String] = []
+    var options = TranscriptionOptions()
+    /// `notetakerLiveTranscriptEnabled` at the start: open utterances are decoded for the live view.
+    var showsLive = true
+    /// Work waiting on each channel's queue (utterances and refine windows).
+    var queued: [AudioChannel: Int] = [:]
+    var partialBusy: Set<AudioChannel> = []
+    /// How long each open utterance was at its last partial decode.
+    var partialLength: [UUID: TimeInterval] = [:]
+    /// Utterances that closed: a partial arriving late must not bring them back.
+    var closed: Set<UUID> = []
     /// Host time of the first frame: the zero of every timestamp in the meeting.
     var origin: TimeInterval?
     var wordCount = 0
@@ -755,8 +886,9 @@ actor ChannelRecorder {
     /// Writes a block that starts `offset` seconds into the recording, filling any gap before it with silence so both
     /// tracks stay on the meeting's timeline; returns the utterances that closed, and whether the disk refused the block
     /// (full, or the folder went away): the recording then stops with what it has.
-    func append(_ samples: [Float], at offset: TimeInterval, muted: Bool) -> (utterances: [Utterance], writeFailed: Bool) {
-        guard !finished else { return ([], false) }
+    func append(_ samples: [Float], at offset: TimeInterval, muted: Bool)
+        -> (utterances: [Utterance], open: (id: UUID, length: TimeInterval)?, writeFailed: Bool) {
+        guard !finished else { return ([], nil, false) }
         var block = muted ? [Float](repeating: 0, count: samples.count) : samples
         let gap = Int(offset * Double(AudioClip.sampleRate)) - writer.totalSamples
         if gap > AudioClip.sampleRate / 10, gap < 3 * 3600 * AudioClip.sampleRate {
@@ -768,8 +900,15 @@ actor ChannelRecorder {
             reportedWriteError = true
             failed = true
         }
-        return (segmenter.append(block), failed)
+        let utterances = segmenter.append(block)
+        return (utterances, segmenter.openSpan, failed)
     }
+
+    /// The utterance still being spoken (for a live partial).
+    func openUtterance() -> Utterance? { segmenter.open }
+
+    /// The next refine window (`SpeechSegmenter.window`).
+    func window(force: Bool = false) -> RefineWindow? { segmenter.window(force: force) }
 
     func finish() -> Utterance? {
         guard !finished else { return nil }

@@ -34,6 +34,19 @@ public enum SupportedLanguages {
     public static func parakeetCovers(_ languages: [String]) -> Bool {
         !languages.isEmpty && languages.allSatisfy { parakeet.contains(base($0)) }
     }
+
+    /// The languages a transcription should consider (dictation and meetings alike): the selection as base codes,
+    /// de-duplicated; empty for auto-detect (everything the engine knows).
+    public static func requested(selected: [String], autoDetect: Bool) -> [String] {
+        guard !autoDetect else { return [] }
+        var seen: Set<String> = []
+        return selected.map(base).filter { seen.insert($0).inserted }
+    }
+
+    /// `requested` for the user's settings (`selectedLanguages`, `autoDetectLanguage`).
+    public static var chosen: [String] {
+        requested(selected: Defaults[.selectedLanguages], autoDetect: Defaults[.autoDetectLanguage])
+    }
 }
 
 /// String distance shared by auto-learn (DictationKit) and the dictionary's sound-alike pass (CleanupKit).

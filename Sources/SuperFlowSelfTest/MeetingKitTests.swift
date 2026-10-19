@@ -5,6 +5,7 @@ import CleanupKit
 import FlowStore
 import llama
 import MeetingKit
+import SpeechKit
 import SuperFlowCore
 
 // Owned with MeetingKit: detection, dual-track recording, speakers, notes, export and retention, run against fake
@@ -12,6 +13,7 @@ import SuperFlowCore
 // `SUPERFLOW_DEV_MODELS` (colon-separated) holds its GGUF.
 func registerMeetingKitTests() {
     SelfTest.cases.append(("MeetingKit.segmenter", { MainActor.assumeIsolated { meetingSegmenter() } }))
+    SelfTest.cases.append(("MeetingKit.quietMicrophone", { MainActor.assumeIsolated { meetingQuietMicrophone() } }))
     SelfTest.cases.append(("MeetingKit.chunkedAudio", { MainActor.assumeIsolated { meetingChunkedAudio() } }))
     SelfTest.cases.append(("MeetingKit.detector", { MainActor.assumeIsolated { meetingDetector() } }))
     SelfTest.cases.append(("MeetingKit.promptCoordinator", { MainActor.assumeIsolated { meetingPromptCoordinator() } }))
@@ -71,6 +73,22 @@ private enum MeetingFixture {
     }
 
     static var words: Int { utterances.reduce(0) { $0 + Dictation.countWords($1.text) } }
+}
+
+/// Voiced stretches of a clip (20 ms blocks over 0.01 RMS), split at 300 ms of silence.
+private func meetingVoicedRuns(_ samples: [Float]) -> [Range<Int>] {
+    let block = 320, gap = 15
+    var runs: [Range<Int>] = []
+    var start: Int?, lastVoiced = 0
+    for b in stride(from: 0, to: samples.count, by: block) {
+        let end = min(b + block, samples.count)
+        if meetingRMS(samples[b..<end]) > 0.01 {
+            if let s = start, b - lastVoiced > gap * block { runs.append(s..<lastVoiced); start = b } else if start == nil { start = b }
+            lastVoiced = end
+        }
+    }
+    if let s = start { runs.append(s..<lastVoiced) }
+    return runs
 }
 
 /// Frequency of a tone from its zero crossings over the voiced part.
@@ -149,10 +167,19 @@ private func meetingRMS(_ samples: ArraySlice<Float>) -> Float {
     func transcribe(_ audio: AudioClip, options: TranscriptionOptions, priority: SpeechPriority) async throws -> Transcript {
         priorities.append(priority)
         if let transcribeError { throw transcribeError }
-        let frequency = meetingFrequency(audio.samples)
-        guard let match = MeetingFixture.utterances.min(by: { abs($0.frequency - frequency) < abs($1.frequency - frequency) }),
-              abs(match.frequency - frequency) < 25 else { throw SpeechError.noSpeech }
-        return Transcript(text: match.text)
+        // A refine window holds several utterances: each voiced run (split at 300 ms of silence) is recognised on its own,
+        // with its time on the clip, like the real engine's phrases.
+        var segments: [TranscriptSegment] = []
+        for run in meetingVoicedRuns(audio.samples) {
+            let frequency = meetingFrequency(Array(audio.samples[run]))
+            guard let match = MeetingFixture.utterances.min(by: { abs($0.frequency - frequency) < abs($1.frequency - frequency) }),
+                  abs(match.frequency - frequency) < 25 else { continue }
+            let rate = Double(AudioClip.sampleRate)
+            segments.append(TranscriptSegment(start: audio.startTime + Double(run.lowerBound) / rate,
+                                              end: audio.startTime + Double(run.upperBound) / rate, text: match.text))
+        }
+        guard !segments.isEmpty else { throw SpeechError.noSpeech }
+        return Transcript(text: segments.map(\.text).joined(separator: " "), segments: segments)
     }
 
     func transcribeIncrementally(_ audio: AsyncStream<AudioClip>, options: TranscriptionOptions, priority: SpeechPriority)
@@ -341,9 +368,11 @@ private func meetingTemporaryFolder() -> URL {
     if let tail = segmenter.flush() { utterances.append(tail) }
     check(utterances.count == 2, "two mic utterances, got \(utterances.count)")
     if utterances.count == 2 {
-        check(abs(utterances[0].start - 0.3) < 0.03 && utterances[0].end > 2.5 && utterances[0].end < 2.75,
-              "first utterance keeps 200 ms of onset and a short tail: \(utterances[0].start)–\(utterances[0].end)")
-        check(abs(utterances[1].start - 8.0) < 0.03, "second utterance on the recording's timeline: \(utterances[1].start)")
+        let onset = 0.5 - SpeechSegmenter.padding
+        check(abs(utterances[0].start - onset) < 0.03 && utterances[0].end > 2.5 && utterances[0].end < 2.85,
+              "first utterance keeps its onset padding and a short tail: \(utterances[0].start)–\(utterances[0].end)")
+        check(abs(utterances[1].start - (8.2 - SpeechSegmenter.padding)) < 0.03,
+              "second utterance on the recording's timeline: \(utterances[1].start)")
     }
 
     var long = SpeechSegmenter(startSample: 16_000)
@@ -356,6 +385,38 @@ private func meetingTemporaryFolder() -> URL {
     var clicks = SpeechSegmenter()
     let click = [Float](repeating: 0, count: 8000) + (0..<1600).map { _ in Float(0.5) } + [Float](repeating: 0, count: 16_000)
     check(clicks.append(click).isEmpty && clicks.flush() == nil, "a 100 ms click is not speech")
+}
+
+/// A laptop microphone at −35 dBFS is levelled and segmented like a close one; a decoder that wandered into another
+/// script is caught; only true echoes of the far end leave the "You" track.
+@MainActor private func meetingQuietMicrophone() {
+    let quiet = MeetingFixture.track(.mic).map { $0 * 0.03 }   // 0.3 → 0.009 peak: about −44 dBFS RMS
+    var segmenter = SpeechSegmenter()
+    var utterances: [Utterance] = []
+    for start in stride(from: 0, to: quiet.count, by: 640) { utterances += segmenter.append(Array(quiet[start..<min(start + 640, quiet.count)])) }
+    if let tail = segmenter.flush() { utterances.append(tail) }
+    check(utterances.count == 2, "both quiet utterances are found: \(utterances.count)")
+    if let first = utterances.first {
+        let peak = first.samples.reduce(0) { max($0, abs($1)) }
+        check(peak > 0.05 && peak <= 0.9, "the quiet track is brought up without clipping: peak \(peak)")
+    }
+    check(segmenter.gain > 10, "gain applied: \(segmenter.gain) dB")
+    var loud = LevelNormalizer()
+    let speech = (0..<16_000).map { 0.5 * Float(sin(Double($0) / 7)) }
+    var out: [Float] = []
+    for start in stride(from: 0, to: speech.count, by: 320) { out += loud.process(Array(speech[start..<start + 320])) }
+    check(out.allSatisfy { abs($0) <= 0.9 } && loud.currentGain < 1, "a loud track is left alone")
+
+    check(!TranscriptScript.fits("これだけ", languages: ["en"]), "Japanese from an English microphone is rejected")
+    check(TranscriptScript.fits("Let's ship the beta.", languages: ["en"]) && TranscriptScript.fits("これだけ", languages: []),
+          "English fits; auto-detect accepts anything")
+    check(TranscriptScript.fits("Привет, Anna", languages: ["en", "ru"]), "a chosen script fits")
+
+    let them = TranscriptSegment(channel: .system, start: 3, end: 5, text: "Priya will send the pricing proposal by Friday.")
+    let echo = TranscriptSegment(channel: .mic, start: 3.2, end: 5.1, text: "Priya will send the pricing proposal Friday.")
+    let answer = TranscriptSegment(channel: .mic, start: 4, end: 6, text: "Great, I'll review the proposal tomorrow morning.")
+    let short = TranscriptSegment(channel: .mic, start: 4.5, end: 5, text: "by Friday")
+    check(MeetingEcho.echoes(in: [them, echo, answer, short]) == [echo.id], "only the echo of the far end is dropped")
 }
 
 @MainActor private func meetingChunkedAudio() {
@@ -589,14 +650,19 @@ private func meetingTemporaryFolder() -> URL {
     try? fakes.store.save(edited)
 
     fakes.audio.feed(MeetingFixture.frames(base: 5_000))
-    meetingWaitUntil { live.items.count >= 5 }
+    meetingWaitUntil { Set(live.items.filter(\.isFinal).map(\.text)).count >= 5 }
     recorder.addMarker("Pricing")
     let folder = SuperFlowPaths.meetingAudio.appendingPathComponent(meeting.id.uuidString)
     check(!ChunkedTrackWriter.chunks(in: folder, channel: .mic).isEmpty && !ChunkedTrackWriter.chunks(in: folder, channel: .system).isEmpty,
           "both tracks are on disk while recording")
-    check(live.items.map(\.text) == MeetingFixture.utterances.map(\.text) && live.items.map(\.channel) == MeetingFixture.utterances.map(\.channel),
-          "live transcript in order with You/Them channels: \(live.items.map(\.text))")
-    if let first = live.items.first { check(abs(first.start - 0.3) < 0.05, "timestamps relative to the recording start (\(first.start))") }
+    // Partials and the refine pass publish a line again; what was said, in order, is the first final of each.
+    var heard: [TranscriptSegment] = []
+    for item in live.items where item.isFinal && !heard.contains(where: { $0.text == item.text }) { heard.append(item) }
+    check(heard.map(\.text) == MeetingFixture.utterances.map(\.text) && heard.map(\.channel) == MeetingFixture.utterances.map(\.channel),
+          "live transcript in order with You/Them channels: \(heard.map(\.text))")
+    if let first = heard.first {
+        check(abs(first.start - (0.5 - SpeechSegmenter.padding)) < 0.05, "timestamps relative to the recording start (\(first.start))")
+    }
     check(fakes.speech.priorities.allSatisfy { $0 == .meeting }, "meeting transcription runs at meeting priority")
     check(fakes.flowBar.phases.contains(.recording(wordCount: MeetingFixture.words, startedAt: meeting.startedAt)), "the bar shows the live word count")
     meetingWaitUntil(2) { fakes.store.rows[meeting.id]?.segments.count == 5 }
@@ -934,6 +1000,10 @@ private func speakerLines(_ meeting: Meeting) -> [String] {
     guard case .success(let meeting)? = complete(10, { try await recorder.start(nil) }) else { exit(2) }
     fakes.audio.feed(MeetingFixture.frames(base: 100, to: 8))
     meetingWaitUntil(10) { (store.meeting(meeting.id)?.segments.count ?? 0) >= 2 }
+    // Ready once every fed frame is on disk too: on a busy machine the frames are still being written after the
+    // transcript was saved, and the kill would land before them.
+    let folder = SuperFlowPaths.meetingAudio(meeting.id)
+    meetingWaitUntil(20) { AudioChannel.allCases.allSatisfy { ChunkedTrackWriter.read(folder: folder, channel: $0).count >= 8 * AudioClip.sampleRate } }
     print(CrashChild.ready + meeting.id.uuidString)
     while true { RunLoop.main.run(until: Date().addingTimeInterval(1)) }
 }

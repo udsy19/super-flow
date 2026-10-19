@@ -108,7 +108,7 @@ public final class SpeechService: SpeechRecognizing {
     /// Apple's engine for the one dictation language it supports; the OS installs that language's assets if needed.
     private func prepareApple(_ model: ModelDescriptor) async throws {
         guard #available(macOS 26, *) else { throw SpeechError.engineUnavailable("\(model.name) needs macOS 26.") }
-        let languages = SpeechLanguages.requested(selected: Defaults[.selectedLanguages], autoDetect: Defaults[.autoDetectLanguage])
+        let languages = SupportedLanguages.chosen
         guard languages.count == 1, let language = languages.first, let locale = await AppleSpeechEngine.locale(for: language) else {
             throw SpeechError.engineUnavailable("Apple's engine needs one dictation language it supports.")
         }
@@ -264,6 +264,10 @@ public final class SpeechService: SpeechRecognizing {
         switch try await engine(for: languages, priority: priority) {
         case .parakeet(let engine):
             transcript = try await engine.transcribe(clip, language: languages.count == 1 ? languages[0] : nil)
+            if languages.count > 1, !TranscriptScript.fits(transcript.text, languages: languages) {
+                // Decoded into a script none of the languages uses: once more, pinned to the first of them.
+                transcript = try await engine.transcribe(clip, language: languages[0])
+            }
             let identified = TextLanguage.identify(transcript.text, among: languages.isEmpty ? SupportedLanguages.parakeet : languages)
             transcript.language = languages.count == 1 ? languages[0] : identified.language
             transcript.languageConfidence = identified.confidence
@@ -291,6 +295,10 @@ public final class SpeechService: SpeechRecognizing {
             }
             transcript = try await engine.transcribe(clip, vocabulary: options.vocabulary)
             transcript.text = TranscriptGuard.accept(transcript.text, speechSeconds: speechSeconds, quiet: quiet)
+        }
+        if !TranscriptScript.fits(transcript.text, languages: languages) {
+            Log.speech.info("Dropped a transcript written in a script none of the chosen languages uses")
+            transcript.text = ""
         }
         if transcript.text.isEmpty { transcript.segments = [] }
         else if transcript.segments.count == 1 { transcript.segments[0].text = transcript.text }

@@ -67,6 +67,82 @@ public enum TranscriptGuard {
     }
 }
 
+/// The writing systems of the requested languages: a transcript mostly in a script none of them uses is a decoder that
+/// wandered off on quiet audio ("これだけ" from a quiet English microphone), not speech. Latin always fits (names,
+/// brands and English words turn up in every language); auto-detect (no languages) and unknown codes accept anything.
+public enum TranscriptScript {
+    public enum Script: Hashable, Sendable {
+        case latin, greek, cyrillic, armenian, hebrew, arabic, devanagari, bengali, gurmukhi, gujarati, tamil, telugu, kannada,
+             malayalam, sinhala, thai, lao, tibetan, myanmar, georgian, ethiopic, khmer, hangul, kana, han, other
+    }
+
+    /// Text whose letters are at least this share in other scripts doesn't fit.
+    public static let foreignShare = 0.3
+
+    /// Languages written in something other than (or besides) Latin; every other code Parakeet or Whisper knows is Latin.
+    static let nonLatin: [String: Set<Script>] = [
+        "be": [.cyrillic], "bg": [.cyrillic], "kk": [.cyrillic], "mk": [.cyrillic], "mn": [.cyrillic], "ru": [.cyrillic],
+        "sr": [.cyrillic], "tg": [.cyrillic], "tt": [.cyrillic], "uk": [.cyrillic], "ba": [.cyrillic], "el": [.greek],
+        "hy": [.armenian], "he": [.hebrew], "yi": [.hebrew], "ar": [.arabic], "fa": [.arabic], "ps": [.arabic], "sd": [.arabic],
+        "ur": [.arabic], "hi": [.devanagari], "mr": [.devanagari], "ne": [.devanagari], "sa": [.devanagari], "bn": [.bengali],
+        "as": [.bengali], "pa": [.gurmukhi], "gu": [.gujarati], "ta": [.tamil], "te": [.telugu], "kn": [.kannada],
+        "ml": [.malayalam], "si": [.sinhala], "th": [.thai], "lo": [.lao], "bo": [.tibetan], "my": [.myanmar], "ka": [.georgian],
+        "am": [.ethiopic], "km": [.khmer], "ja": [.kana, .han], "zh": [.han], "yue": [.han], "ko": [.hangul, .han],
+    ]
+
+    /// The scripts the languages are written in, Latin included; nil when any of them is unknown (anything fits).
+    static func scripts(for languages: [String]) -> Set<Script>? {
+        var scripts: Set<Script> = [.latin]
+        for language in languages.map(SupportedLanguages.base) {
+            if let own = nonLatin[language] { scripts.formUnion(own); continue }
+            guard SupportedLanguages.whisper.contains(language) || SupportedLanguages.parakeet.contains(language) else { return nil }
+        }
+        return scripts
+    }
+
+    /// Whether the text is written the way the languages are: under `foreignShare` of its letters in other scripts.
+    public static func fits(_ text: String, languages: [String]) -> Bool {
+        guard !languages.isEmpty, let allowed = scripts(for: languages) else { return true }
+        var letters = 0, foreign = 0
+        for scalar in text.unicodeScalars where scalar.properties.isAlphabetic {
+            letters += 1
+            if !allowed.contains(script(of: scalar)) { foreign += 1 }
+        }
+        return letters == 0 || Double(foreign) < foreignShare * Double(letters)
+    }
+
+    static func script(of scalar: Unicode.Scalar) -> Script {
+        switch scalar.value {
+        case 0x41...0x24F, 0x250...0x2AF, 0x1E00...0x1EFF, 0x2C60...0x2C7F, 0xA720...0xA7FF, 0xFF21...0xFF5A: .latin
+        case 0x370...0x3FF, 0x1F00...0x1FFF: .greek
+        case 0x400...0x52F, 0x1C80...0x1C8F, 0x2DE0...0x2DFF, 0xA640...0xA69F: .cyrillic
+        case 0x530...0x58F: .armenian
+        case 0x590...0x5FF, 0xFB1D...0xFB4F: .hebrew
+        case 0x600...0x6FF, 0x750...0x77F, 0x8A0...0x8FF, 0xFB50...0xFDFF, 0xFE70...0xFEFF: .arabic
+        case 0x900...0x97F: .devanagari
+        case 0x980...0x9FF: .bengali
+        case 0xA00...0xA7F: .gurmukhi
+        case 0xA80...0xAFF: .gujarati
+        case 0xB80...0xBFF: .tamil
+        case 0xC00...0xC7F: .telugu
+        case 0xC80...0xCFF: .kannada
+        case 0xD00...0xD7F: .malayalam
+        case 0xD80...0xDFF: .sinhala
+        case 0xE00...0xE7F: .thai
+        case 0xE80...0xEFF: .lao
+        case 0xF00...0xFFF: .tibetan
+        case 0x1000...0x109F: .myanmar
+        case 0x10A0...0x10FF, 0x2D00...0x2D2F: .georgian
+        case 0x1100...0x11FF, 0x3130...0x318F, 0xA960...0xA97F, 0xAC00...0xD7FF: .hangul
+        case 0x1200...0x139F: .ethiopic
+        case 0x1780...0x17FF: .khmer
+        case 0x3040...0x30FF, 0x31F0...0x31FF, 0xFF66...0xFF9F: .kana
+        case 0x3005...0x3007, 0x3400...0x4DBF, 0x4E00...0x9FFF, 0xF900...0xFAFF, 0x20000...0x2FFFF: .han
+        default: .other
+        }
+    }
+}
+
 /// The language of recognised text (Parakeet reports none), for `Transcript.language` and the "Speaking a different
 /// language?" hint (local-models.md §2.10). Too little text is not judged.
 public enum TextLanguage {

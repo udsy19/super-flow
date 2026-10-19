@@ -3,40 +3,133 @@ import Foundation
 import SuperFlowCore
 
 // Per-channel audio for a meeting (behaviour.md §20.4.6, local-models.md §8.2–8.3): 16 kHz mono samples are appended to
-// raw 16-bit PCM chunk files while recording (every byte written survives a crash or quit), cut into utterances for the
-// live transcript, and turned into one AAC file per channel once the meeting is processed.
+// raw 16-bit PCM chunk files while recording (every byte written survives a crash or quit), levelled and cut into
+// utterances for the live transcript, and turned into one AAC file per channel once the meeting is processed.
 
-/// One closed stretch of speech on a channel, with times relative to the recording start.
+/// One stretch of speech on a channel, with times relative to the recording start. `id` is the same for the stretch
+/// while it is still being spoken (live partials) and once it closed (the final segment replaces them).
 public struct Utterance: Sendable {
+    public var id: UUID
     public var samples: [Float]
     public var start: TimeInterval
     public var end: TimeInterval { start + Double(samples.count) / Double(AudioClip.sampleRate) }
 }
 
-/// Energy segmenter with an adaptive noise floor: an utterance closes at a pause of 400 ms or at 15 s
-/// (local-models.md §8.3). The speech engine's own VAD then decides whether it holds speech.
+/// Level of a block in dBFS (mean square), −120 for digital silence.
+func decibels(_ samples: ArraySlice<Float>) -> Float {
+    guard !samples.isEmpty else { return -120 }
+    var sum: Float = 0
+    for s in samples { sum += s * s }
+    return max(-120, 10 * log10(sum / Float(samples.count) + 1e-12))
+}
+
+/// Automatic gain for one track before it is segmented and recognised (the recording on disk keeps the raw level). A
+/// quiet laptop microphone is brought up so the loud end of speech sits near `target`, by at most `maximumGain`; louder
+/// tracks are left alone. The gain follows only the level of speech, never pauses or room noise, so it doesn't pump, and
+/// no block is pushed past `ceiling`.
+public struct LevelNormalizer: Sendable {
+    public static let target: Float = -20
+    public static let maximumGain: Float = 30
+    static let ceiling: Float = 0.9
+    /// Blocks this far above the noise floor count as speech for the level estimate.
+    static let speechMargin: Float = 10
+
+    /// Starts low, so a track that is digital silence between words (a muted far end, a test tone) still finds its speech.
+    private var floor: Float = -70
+    private var speech: Float?
+    private var gain: Float = 0
+    private var applied: Float = 0
+    /// The gain (dB) applied at the end of the last block.
+    public var currentGain: Float { applied }
+
+    public init() {}
+
+    /// Levels one block (20 ms blocks keep the gain smooth).
+    public mutating func process(_ block: [Float]) -> [Float] {
+        guard !block.isEmpty else { return block }
+        let level = decibels(block[...])
+        if level > -100 {
+            floor = min(level, floor + 0.05)
+            if level > floor + Self.speechMargin, level > -70 {
+                // Fast up, slow down: the estimate sits near the loud end of the speech.
+                speech = speech.map { $0 + (level - $0) * (level > $0 ? 0.1 : 0.02) } ?? level
+            }
+        }
+        let wanted = speech.map { min(Self.maximumGain, max(0, Self.target - $0)) } ?? 0
+        gain += max(-1, min(1, wanted - gain))
+        let peak = block.reduce(0) { max($0, abs($1)) }
+        let limit = peak > 0 ? 20 * log10(Self.ceiling / peak) : Self.maximumGain
+        let end = min(gain, limit), start = min(applied, limit)
+        applied = end
+        guard start != 0 || end != 0 else { return block }
+        let from = pow(10, start / 20), to = pow(10, end / 20)
+        let step = (to - from) / Float(block.count)
+        return block.enumerated().map { i, s in s * (from + step * Float(i)) }
+    }
+}
+
+/// Consecutive utterances of one track, levelled, for one decode with context (the refine pass).
+public struct RefineWindow: Sendable {
+    /// The utterances it covers: their live segments are what the refined text replaces.
+    public var utteranceIDs: [UUID]
+    public var samples: [Float]
+    public var start: TimeInterval
+    public var end: TimeInterval { start + Double(samples.count) / Double(AudioClip.sampleRate) }
+}
+
+/// Energy segmenter on the levelled track (local-models.md §8.3): a block is voiced when it stands `margin` above the
+/// noise floor, which drops to any quieter block at once and creeps up 2.5 dB/s, so a quiet microphone, a loud room or
+/// a far end that is digital silence between words all segment alike. An utterance closes at a pause of `pause`, or at
+/// `maxLength` on the quietest moment of its last seconds so no word is cut in two. The speech engine's own VAD then
+/// decides whether it holds speech.
+///
+/// Closed utterances are also grouped into refine windows of up to `windowLength`, cut between utterances: a decode
+/// that sees 30 s of a quiet speaker at once hears noticeably more than one that starts cold at every pause. The levelled
+/// audio is kept only from the oldest utterance not yet in a window.
 public struct SpeechSegmenter {
-    public static let pause: TimeInterval = 0.4
+    public static let pause: TimeInterval = 0.5
     public static let maxLength: TimeInterval = 15
-    public static let minSpeech: TimeInterval = 0.25
-    public static let padding: TimeInterval = 0.2
+    public static let minSpeech: TimeInterval = 0.2
+    public static let padding: TimeInterval = 0.3
+    public static let windowLength: TimeInterval = 30
+    /// A track quiet this long (no utterance open) refines what it has without waiting for a full window.
+    public static let idleWindow: TimeInterval = 8
+    /// Levelled audio kept for windows at most; when refining falls this far behind, the oldest utterances keep their
+    /// live text.
+    static let maximumBacklog: TimeInterval = 300
+    /// How far back from `maxLength` the cut may move to find a gap between words.
+    static let cutWindow: TimeInterval = 3
+    static let margin: Float = 6
+    /// Nothing quieter than this (after levelling) is speech.
+    static let quietest: Float = -60
     private static let block = 320  // 20 ms
 
+    private var normalizer = LevelNormalizer()
+    private var audio: [Float] = []   // levelled, from `audioStart`
+    private var audioStart = 0
+    private var waiting: [(id: UUID, start: Int, end: Int)] = []
     private var position = 0          // samples consumed so far
     private var pending: [Float] = [] // < one block, waiting for more samples
     private var current: [Float] = []
+    private var levels: [Float] = []  // per block of `current`
+    private var voicedBlocks: [Bool] = []
     private var currentStart = 0
+    private var currentID = UUID()
     private var voiced = 0
     private var silentRun = 0
     private var history: [Float] = [] // the last `padding` of audio while idle, so a word's onset is kept
-    private var noiseFloor: Float = 0.002
+    private var floor: Float = -60
 
     /// `startSample` places the first sample on the recording's timeline (a recovered tail starts mid-recording).
     public init(startSample: Int = 0) {
         position = startSample
+        audioStart = startSample
     }
 
     private static func samples(_ seconds: TimeInterval) -> Int { Int(seconds * Double(AudioClip.sampleRate)) }
+
+    /// The gain the track is levelled with right now (dB).
+    public var gain: Float { normalizer.currentGain }
 
     /// Feeds samples; returns the utterances that closed.
     public mutating func append(_ samples: [Float]) -> [Utterance] {
@@ -51,18 +144,69 @@ public struct SpeechSegmenter {
         return closed
     }
 
-    /// Closes whatever is open (end of recording).
+    /// The utterance still being spoken, once it holds `minSpeech` of voiced audio (for a live partial; a copy).
+    public var open: Utterance? {
+        guard voiced >= Self.samples(Self.minSpeech) else { return nil }
+        return Utterance(id: currentID, samples: current, start: Double(currentStart) / Double(AudioClip.sampleRate))
+    }
+
+    /// Id and length of `open` without copying its samples.
+    public var openSpan: (id: UUID, length: TimeInterval)? {
+        guard voiced >= Self.samples(Self.minSpeech) else { return nil }
+        return (currentID, Double(current.count) / Double(AudioClip.sampleRate))
+    }
+
+    /// Closes whatever is open (end of recording, or a stop): the samples still waiting for a whole block count too.
     public mutating func flush() -> Utterance? {
-        if !current.isEmpty { current += pending }
+        if !pending.isEmpty {
+            let tail = normalizer.process(pending)
+            audio += tail
+            position += tail.count
+            if !current.isEmpty { current += tail }
+        }
         pending = []
         return close()
     }
 
-    private mutating func consume(_ block: [Float]) -> Utterance? {
-        defer { position += block.count }
-        let rms = (block.reduce(0) { $0 + $1 * $1 } / Float(block.count)).squareRoot()
-        let isVoiced = rms > max(0.01, noiseFloor * 3)
-        if !isVoiced { noiseFloor = max(0.0005, noiseFloor * 0.95 + rms * 0.05) }
+    /// The next refine window: consecutive closed utterances spanning up to `windowLength`, once a later one no longer
+    /// fits, or the track has been quiet for `idleWindow`, or with `force` (the end) whatever is closed.
+    public mutating func window(force: Bool = false) -> RefineWindow? {
+        guard let first = waiting.first else { return nil }
+        var count = waiting.count
+        if let over = waiting.firstIndex(where: { $0.end - first.start > Self.samples(Self.windowLength) }) {
+            count = max(1, over)
+        } else if !force {
+            guard current.isEmpty, position - waiting[waiting.count - 1].end >= Self.samples(Self.idleWindow) else { return nil }
+        }
+        let taken = Array(waiting.prefix(count))
+        waiting.removeFirst(count)
+        defer { trimAudio() }
+        let lower = max(taken[0].start, audioStart), upper = min(taken[taken.count - 1].end, audioStart + audio.count)
+        guard upper > lower else { return nil }
+        return RefineWindow(utteranceIDs: taken.map(\.id), samples: Array(audio[(lower - audioStart)..<(upper - audioStart)]),
+                            start: Double(lower) / Double(AudioClip.sampleRate))
+    }
+
+    /// Drops levelled audio no window will need: before the oldest waiting utterance, the open one and the onset padding.
+    /// Runs once a second's worth can go, so the copy is rare.
+    private mutating func trimAudio() {
+        let backlog = Self.samples(Self.maximumBacklog)
+        while let oldest = waiting.first, position - oldest.start > backlog { waiting.removeFirst() }
+        let needed = min(waiting.first?.start ?? .max, current.isEmpty ? position - Self.samples(Self.padding) : currentStart)
+        let drop = min(audio.count, needed - audioStart)
+        guard drop >= AudioClip.sampleRate else { return }
+        audio.removeFirst(drop)
+        audioStart += drop
+    }
+
+    private mutating func consume(_ raw: [Float]) -> Utterance? {
+        defer { position += raw.count; trimAudio() }
+        let block = normalizer.process(raw)
+        audio += block
+        let level = decibels(block[...])
+        // Digital silence (a far end that went quiet, a muted microphone) says nothing about the room's noise.
+        if level > -100 { floor = min(level, floor + 0.05) }
+        let isVoiced = level > max(Self.quietest, floor + Self.margin)
 
         if current.isEmpty {
             guard isVoiced else {
@@ -70,13 +214,18 @@ public struct SpeechSegmenter {
                 return nil
             }
             current = history + block
+            levels = [Float](repeating: -120, count: history.count / Self.block) + [level]
+            voicedBlocks = [Bool](repeating: false, count: levels.count - 1) + [true]
             currentStart = position - history.count
+            currentID = UUID()
             history = []
             voiced = block.count
             silentRun = 0
             return nil
         }
         current += block
+        levels.append(level)
+        voicedBlocks.append(isVoiced)
         if isVoiced { voiced += block.count; silentRun = 0 } else { silentRun += block.count }
         if silentRun >= Self.samples(Self.pause) {
             // Keep a little of the trailing silence; the rest starts the next onset history.
@@ -85,14 +234,37 @@ public struct SpeechSegmenter {
             current.removeLast(trim)
             return close()
         }
-        if current.count >= Self.samples(Self.maxLength) { return close() }
+        if current.count >= Self.samples(Self.maxLength) { return cut() }
         return nil
     }
 
+    /// A monologue at `maxLength`: closes at the quietest block of its last `cutWindow` and keeps the rest open.
+    private mutating func cut() -> Utterance? {
+        let window = Self.samples(Self.cutWindow) / Self.block
+        let first = max(1, levels.count - window)
+        // The latest of the quietest blocks: a level stretch (one long vowel, a tone) still cuts at `maxLength`.
+        let quietest = (first..<levels.count).reversed().min { levels[$0] < levels[$1] } ?? levels.count
+        let split = min(current.count, quietest * Self.block)
+        let rest = Array(current[split...]), restLevels = Array(levels[quietest...]), restVoiced = Array(voicedBlocks[quietest...])
+        current = Array(current[..<split])
+        voiced = voicedBlocks[..<quietest].filter { $0 }.count * Self.block
+        let closed = close()
+        current = rest
+        levels = restLevels
+        voicedBlocks = restVoiced
+        currentStart += split
+        currentID = UUID()
+        voiced = restVoiced.filter { $0 }.count * Self.block
+        silentRun = (restVoiced.lastIndex(of: true).map { restVoiced.count - 1 - $0 } ?? restVoiced.count) * Self.block
+        return closed
+    }
+
     private mutating func close() -> Utterance? {
-        defer { current = []; voiced = 0; silentRun = 0 }
+        let start = currentStart
+        defer { current = []; levels = []; voicedBlocks = []; voiced = 0; silentRun = 0 }
         guard voiced >= Self.samples(Self.minSpeech) else { return nil }
-        return Utterance(samples: current, start: Double(currentStart) / Double(AudioClip.sampleRate))
+        waiting.append((currentID, start, start + current.count))
+        return Utterance(id: currentID, samples: current, start: Double(start) / Double(AudioClip.sampleRate))
     }
 }
 
