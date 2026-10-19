@@ -535,8 +535,8 @@ cases where the raw model output carried out the dictated instruction; the guard
   - It also translated a code-switched word ("mañana" → "tomorrow"). Keep the "never translate" rule and add a
     guardrail that rejects an output in another script or language than the input's (P2).
 - **Do not add Qwen3-1.7B.** No quality gain, and the most injections obeyed.
-- **Not measured in this round:** Qwen3.5-0.8B (the 8 GB preset). Run the eval set on it before the next preset
-  change.
+- **Smaller models** (Qwen3.5-0.8B, the 8 GB preset; Gemma 3 1B and 270M): measured in `cleanup-models.md`. None
+  matches 2B, and all of them score below the rules alone.
 
 ## 8. Decoding settings
 
