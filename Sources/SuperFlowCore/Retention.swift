@@ -26,6 +26,13 @@ public enum RetentionPolicy {
         now.addingTimeInterval(-Double(DictationLimits.dictationAudioRetentionDays) * 86_400)
     }
 
+    /// Whether a dictation's audio may go at the audio cutoff: not while it is the only record of what was said (no text
+    /// came out: the engine failed, or the dictation was cancelled or interrupted before it was transcribed).
+    public static func mayDeleteAudio(of dictation: Dictation) -> Bool {
+        !dictation.rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !dictation.cleanedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     /// Whether a meeting's audio should be deleted now: it ended more than `audioDays` ago and still has audio. Audio
     /// that is the meeting's only record (nothing was transcribed: the engine failed or wasn't there) is kept, so
     /// "Retry transcript" still works and retention never deletes words that exist nowhere else.

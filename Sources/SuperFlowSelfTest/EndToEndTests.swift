@@ -597,6 +597,7 @@ private func e2eWords(_ text: String) -> String { text.lowercased().components(s
     func save(_ dictation: Dictation) throws { throw StoreError.storageFull }
     func deleteDictation(_ id: UUID) throws { try store.deleteDictation(id) }
     func pruneDictations(before cutoff: Date) throws -> Int { try store.pruneDictations(before: cutoff) }
+    func pruneDictationAudio(before cutoff: Date) throws -> Int { try store.pruneDictationAudio(before: cutoff) }
     func eraseDictations() throws -> Int { try store.eraseDictations() }
     func statistics(since: Date) -> (dictations: Int, words: Int, seconds: TimeInterval) { store.statistics(since: since) }
     var dictionary: [DictionaryEntry] { store.dictionary }

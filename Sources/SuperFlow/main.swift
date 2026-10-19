@@ -57,6 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let cutoff = RetentionPolicy.dictationCutoff(policy: Defaults[.localDataPolicy], now: now) {
             _ = try? Services.history.pruneDictations(before: cutoff)
         }
+        _ = try? Services.history.pruneDictationAudio(before: RetentionPolicy.dictationAudioCutoff(now: now))
         if let cutoff = RetentionPolicy.cutoff(days: Defaults[.meetingTranscriptRetentionDays], now: now) {
             _ = try? Services.meetings.pruneMeetings(before: cutoff)
         }

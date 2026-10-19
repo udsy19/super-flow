@@ -12,7 +12,7 @@ at-rest encryption; the app adds none).
 | Data | Where | Kept |
 |---|---|---|
 | Dictation history: raw transcript, cleaned text, what you edited it into, the app it went to, language, duration | `store.sqlite` | By the local data policy (Settings › Data and Privacy): kept, deleted after 24 h, or never stored |
-| Dictation audio | `Audio/Dictations/<id>.caf` (`<id>.pcm` and `<id>.json` while recording, so a crash keeps it) | 14 days, for retry and playback; not written when the policy is "never store" |
+| Dictation audio | `Audio/Dictations/<id>.caf` (`<id>.pcm` and `<id>.json` while recording, so a crash keeps it) | 14 days, for retry and playback, then deleted at the next launch (the dictation's text stays); audio of a dictation that was never transcribed stays until you retry or delete it, since it is the only record of what you said; not written when the policy is "never store" |
 | Dictionary, replacement rules, learned words, snippets, transforms, styles | `store.sqlite` | Until you delete them |
 | Notes (the Notes page) | `store.sqlite` (pre-1.0 builds kept `notes.json`; it is imported once and parked in `Backup/`) | Until you delete them |
 | Meetings: title, participants from the calendar event, transcript with speaker labels, markers, your notes, summary, action items | `store.sqlite` | By the transcript retention (Settings › Data and Privacy; forever by default) |

@@ -40,6 +40,30 @@ func registerFlowStoreTests() {
     try? store.save(edited)
     check(store.dictation(older.id)?.usesRawText == true && store.dictations(matching: "", limit: 10, offset: 0).count == 2, "upsert keeps one row")
     check((try? store.pruneDictations(before: Date(timeIntervalSince1970: 1_800_000_050))) == 1 && store.dictation(older.id) == nil, "prune by cutoff")
+
+    // Dictation audio goes after 14 days and the text stays, except audio that is the only record of an untranscribed one.
+    let now = Date(timeIntervalSince1970: 1_800_000_000)
+    try? FileManager.default.createDirectory(at: SuperFlowPaths.dictationAudio, withIntermediateDirectories: true)
+    func kept(_ name: String, text: String, daysAgo: Double, outcome: DictationOutcome = .formatted) -> Dictation {
+        let file = name + ".caf"
+        try? Data("audio".utf8).write(to: SuperFlowPaths.dictationAudio.appendingPathComponent(file))
+        let row = Dictation(createdAt: now.addingTimeInterval(-daysAgo * 86_400), rawText: text, cleanedText: text, outcome: outcome, audioFile: file)
+        try? store.save(row)
+        return row
+    }
+    let old = kept("old", text: "Ship it on Friday.", daysAgo: 20)
+    let failed = kept("failed", text: "", daysAgo: 20, outcome: .error)
+    let recent = kept("recent", text: "Lunch at noon?", daysAgo: 3)
+    let cutoff = RetentionPolicy.dictationAudioCutoff(now: now)
+    check((try? store.pruneDictationAudio(before: cutoff)) == 1, "one old file pruned")
+    func exists(_ row: Dictation) -> Bool { FileManager.default.fileExists(atPath: SuperFlowPaths.dictationAudio.appendingPathComponent(row.audioFile!).path) }
+    check(!exists(old) && store.dictation(old.id)?.audioFile == nil && store.dictation(old.id)?.cleanedText == "Ship it on Friday.",
+          "an old dictation keeps its text and loses its audio")
+    check(exists(failed) && store.dictation(failed.id)?.audioFile == failed.audioFile, "audio that is the only record stays for Retry transcript")
+    check(exists(recent) && store.dictation(recent.id)?.audioFile == recent.audioFile, "recent audio stays")
+    check((try? store.pruneDictationAudio(before: cutoff)) == 0, "pruning again finds nothing")
+    for row in [failed, recent] { try? store.deleteDictation(row.id) }
+    try? store.deleteDictation(old.id)
     try? store.deleteDictation(newer.id)
     check(store.lastDictation == nil, "delete")
     check((try? store.deleteDictation(newer.id)) == nil, "deleting a missing row throws")

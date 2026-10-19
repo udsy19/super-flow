@@ -619,8 +619,12 @@ public protocol HistoryStoring: AnyObject {
     var lastDictation: Dictation? { get }
     func save(_ dictation: Dictation) throws
     func deleteDictation(_ id: UUID) throws
-    /// Deletes dictations older than the cutoff; returns the count. Audio files past `DictationLimits.dictationAudioRetentionDays` go too.
+    /// Deletes dictations older than the cutoff, with their audio; returns the count.
     @discardableResult func pruneDictations(before cutoff: Date) throws -> Int
+    /// Deletes the audio of dictations older than the cutoff (`RetentionPolicy.dictationAudioCutoff`, 14 days) and keeps
+    /// their text. Audio that is the only record of a dictation (nothing was transcribed: the engine failed, or it was
+    /// cancelled or interrupted) stays for "Retry transcript". Returns how many files went.
+    @discardableResult func pruneDictationAudio(before cutoff: Date) throws -> Int
     @discardableResult func eraseDictations() throws -> Int
     /// Words dictated and dictation count, for Insights.
     func statistics(since: Date) -> (dictations: Int, words: Int, seconds: TimeInterval)

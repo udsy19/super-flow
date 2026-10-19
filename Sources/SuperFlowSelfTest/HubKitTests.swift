@@ -362,6 +362,7 @@ private final class FakeHubHistory: HistoryStoring, MeetingStoring {
     func save(_ dictation: Dictation) throws { all.removeAll { $0.id == dictation.id }; all.append(dictation); subject.send(.dictations) }
     func deleteDictation(_ id: UUID) throws { all.removeAll { $0.id == id }; subject.send(.dictations) }
     func pruneDictations(before cutoff: Date) throws -> Int { 0 }
+    func pruneDictationAudio(before cutoff: Date) throws -> Int { 0 }
     func eraseDictations() throws -> Int { defer { all = [] }; return all.count }
     func statistics(since: Date) -> (dictations: Int, words: Int, seconds: TimeInterval) {
         let items = all.filter { $0.createdAt >= since && $0.wordCount > 0 }

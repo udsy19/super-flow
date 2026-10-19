@@ -191,6 +191,21 @@ public final class SQLiteStore: HistoryStoring, MeetingStoring {
         return ids.count
     }
 
+    @discardableResult public func pruneDictationAudio(before cutoff: Date) throws -> Int {
+        let rows = try db.query("SELECT json FROM dictations WHERE created_at < ? AND audio_file IS NOT NULL",
+                                [.real(cutoff.timeIntervalSince1970)]) { JSON.decode(Dictation.self, $0.text(0)) }.compactMap { $0 }
+        var pruned = 0
+        for var row in rows {
+            guard let file = row.audioFile, RetentionPolicy.mayDeleteAudio(of: row) else { continue }
+            // The row lets go of the file first: a crash in between leaves a stray file, never a row pointing nowhere.
+            row.audioFile = nil
+            try save(row)
+            try? FileManager.default.removeItem(at: SuperFlowPaths.dictationAudio.appendingPathComponent(file))
+            pruned += 1
+        }
+        return pruned
+    }
+
     @discardableResult public func eraseDictations() throws -> Int {
         try pruneDictations(before: .distantFuture)
     }
