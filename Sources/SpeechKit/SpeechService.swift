@@ -84,15 +84,24 @@ public final class SpeechService: SpeechRecognizing {
         }
     }
 
-    /// The preferred engine when nothing is loaded yet: the dictation setting, else the best installed model this Mac runs.
+    /// The preferred engine when nothing is loaded yet: the dictation setting, else the best installed model this Mac
+    /// runs. A model that won't load (a damaged file, too little memory) doesn't stop dictation while another installed
+    /// one does; the first error is thrown only when none loads.
     private func ensureEngine() async throws {
         guard parakeet == nil, whisper == nil else { return }
         let installed = availableEngines
-        let preferred = [Defaults[.asrModelID]] + installed.sorted { rank($0) > rank($1) }
-        guard let id = preferred.first(where: installed.contains) else {
-            throw SpeechError.modelNotInstalled(Defaults[.asrModelID])
+        var tried: Set<String> = []
+        var firstError: Error?
+        for id in [Defaults[.asrModelID]] + installed.sorted(by: { rank($0) > rank($1) }) where installed.contains(id) && tried.insert(id).inserted {
+            do {
+                try await prepare(modelID: id)
+                return
+            } catch {
+                Log.speech.error("\(id, privacy: .public) didn't load (\(error.localizedDescription, privacy: .public)); trying the next installed engine")
+                firstError = firstError ?? error
+            }
         }
-        try await prepare(modelID: id)
+        throw firstError ?? SpeechError.modelNotInstalled(Defaults[.asrModelID])
     }
 
     private func rank(_ id: String) -> Int64 {

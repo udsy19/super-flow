@@ -1,4 +1,5 @@
 import AVFoundation
+import Combine
 import CryptoKit
 import Foundation
 import SpeechKit
@@ -8,6 +9,7 @@ import SuperFlowCore
 // synthesised with `say -o` into the temporary folder (nothing is played). Real models are used only when present in
 // the folders `SUPERFLOW_DEV_MODELS` names (colon-separated); they are never in the repository.
 func registerSpeechKitTests() {
+    SelfTest.cases.append(("SpeechKit.brokenModelFallsBack", { MainActor.assumeIsolated { speechBrokenModelFallsBack() } }))
     SelfTest.cases.append(("SpeechKit.languages", { speechLanguages() }))
     SelfTest.cases.append(("SpeechKit.transcriptGuards", { speechGuards() }))
     SelfTest.cases.append(("SpeechKit.vadSegmentation", { speechSegmentation() }))
@@ -690,4 +692,43 @@ private func words(_ text: String) -> String { text.lowercased().components(sepa
     case .failure(let error)?: check(false, "diarization failed: \(error.localizedDescription)")
     case nil: check(false, "diarization timed out")
     }
+}
+
+/// Two installed speech models, the preferred one damaged: the next one is tried instead of every dictation failing on
+/// the first; the first error is reported only when none loads.
+@MainActor private func speechBrokenModelFallsBack() {
+    final class Installed: ModelManaging {
+        let files: [String: URL]
+        var asked: [String] = []
+        init(_ files: [String: URL]) { self.files = files }
+        var catalog: [ModelDescriptor] { ModelCatalog.all }
+        func state(of id: String) -> ModelState { files[id] == nil ? .notDownloaded : .installed }
+        func location(of id: String) -> URL? { asked.append(id); return files[id] }
+        func download(_ id: String) -> AsyncThrowingStream<DownloadProgress, Error> { AsyncThrowingStream { $0.finish() } }
+        func pause(_ id: String) {}
+        func delete(_ id: String) throws {}
+        func importModel(_ id: String, from file: URL) async throws {}
+        var diskUsage: Int64 { 0 }
+        var changes: AnyPublisher<String, Never> { Empty().eraseToAnyPublisher() }
+        func startAutomaticDownloads() {}
+        var autoDownloadStatus: AutoDownloadStatus { .upToDate }
+        func setUserBusy(_ busy: Bool) {}
+        func readiness(of id: String) -> Double? { nil }
+    }
+    let folder = SuperFlowPaths.ensure(SuperFlowPaths.support.appendingPathComponent("broken-models-\(UUID().uuidString)", isDirectory: true))
+    let small = folder.appendingPathComponent("small.bin"), base = folder.appendingPathComponent("base.bin")
+    try? Data("damaged".utf8).write(to: small)
+    try? Data("damaged".utf8).write(to: base)
+    let models = Installed([ModelCatalog.whisperSmall.id: small, ModelCatalog.whisperBase.id: base])
+    Defaults[.asrModelID] = ModelCatalog.whisperSmall.id
+    defer { Defaults.reset(.asrModelID) }
+    let service = SpeechService(models: models)
+    let silence = [Float](repeating: 0, count: 8_000)
+    let tone: [Float] = silence + (0..<24_000).map { (i: Int) -> Float in Float(0.3 * sin(Double(i) * 2 * Double.pi * 220 / 16_000)) } + silence
+    let result = complete(60) { try await service.transcribe(AudioClip(samples: tone), options: TranscriptionOptions(languages: ["en"]), priority: .dictation) }
+    check(models.asked.contains(ModelCatalog.whisperSmall.id) && models.asked.contains(ModelCatalog.whisperBase.id),
+          "the damaged preferred model is followed by the other installed one: \(models.asked)")
+    if case .failure(let error)? = result {
+        check(error is SpeechError && error.localizedDescription.contains("small.bin"), "with none loadable, the preferred model's error: \(error.localizedDescription)")
+    } else { check(false, "two damaged models can't transcribe") }
 }

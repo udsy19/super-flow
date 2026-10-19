@@ -232,9 +232,14 @@ private func endToEndAutoLearn() {
     var error: Error?
     /// Samples the last one-shot transcription was given ("Retry transcript").
     var lastClipSamples = 0
+    /// Set to make loading the engine fail (a damaged model file).
+    var prepareError: Error?
     var availableEngines: [String] { ["scripted"] }
-    var activeEngineID: String? { "scripted" }
-    func prepare(modelID: String) async throws {}
+    var activeEngineID: String? = "scripted"
+    func prepare(modelID: String) async throws {
+        if let prepareError { throw prepareError }
+        activeEngineID = modelID
+    }
     func unload() {}
     func transcribe(_ audio: AudioClip, options: TranscriptionOptions, priority: SpeechPriority) async throws -> Transcript {
         if let error { throw error }
@@ -530,10 +535,17 @@ private func e2eWords(_ text: String) -> String { text.lowercased().components(s
     try? Data("not a model".utf8).write(to: broken)
     let models = E2EModels()
     if let id = Defaults[.cleanupModelID] { models.locations[id] = broken }
-    let second = E2EServices(speech: speech, models: models, cleanup: TextCleaner())
+    let brokenSpeech = E2EScriptedSpeech()
+    brokenSpeech.activeEngineID = nil
+    brokenSpeech.prepareError = SpeechError.failed("Couldn't load the speech model.")
+    Defaults[.asrModelID] = "scripted"
+    defer { Defaults.reset(.asrModelID) }
+    let second = E2EServices(speech: brokenSpeech, models: models, cleanup: TextCleaner())
     defer { second.restore() }
     second.coordinator.activate()
     check(e2eWait(20) { second.flowBar.notifications.contains { $0.id == "dictation.cleanupModel" } }, "a card says the cleanup model didn't load")
+    check(second.flowBar.notifications.contains { $0.id == "dictation.speechModel" && $0.variant == .error },
+          "a card says the speech model didn't load and that nothing else can stand in")
 }
 
 /// History can't save (a full disk) or is turned off: the text still lands, paste-last still has it, and nothing is

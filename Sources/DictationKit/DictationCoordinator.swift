@@ -49,6 +49,7 @@ public final class DictationCoordinator: DictationControlling {
     /// The last text when it isn't in History (History is off, or saving failed): paste-last and copy-last use it.
     private var lastUnsavedText: String?
     private var reportedCleanupLoadFailure = false
+    private var reportedSpeechLoadFailure = false
 
     public init() {}
 
@@ -102,6 +103,13 @@ public final class DictationCoordinator: DictationControlling {
             if Services.models.state(of: asr) == .installed, Services.speech.activeEngineID != asr, Services.speech.availableEngines.contains(asr) {
                 do { try await Services.speech.prepare(modelID: asr) } catch {
                     Log.app.error("Speech engine not ready: \(error.localizedDescription, privacy: .public)")
+                    // The chosen model is installed but won't load: dictation falls back to another installed model when
+                    // there is one (SpeechKit tries them in turn); say which way it is, once.
+                    if !self.reportedSpeechLoadFailure {
+                        self.reportedSpeechLoadFailure = true
+                        let fallback = Services.speech.availableEngines.contains { $0 != asr }
+                        Services.flowBar.show(DictationNotices.speechModelFailed(fallback: fallback)) { _ in Services.hub.showSettings(.models) }
+                    }
                 }
             } else if Services.speech.activeEngineID == nil, let any = Services.speech.availableEngines.first {
                 try? await Services.speech.prepare(modelID: any)
@@ -172,7 +180,7 @@ public final class DictationCoordinator: DictationControlling {
     private func closeCards() {
         for id in ["dictation.secureField", "dictation.noAudio", "dictation.noSpeech", "dictation.otherKey", "dictation.clipboard",
                    "transform.noSelection", "transform.failed", "dictation.failed", "dictation.learned", "dictation.preparing",
-                   "dictation.micLost", "dictation.notSaved", "dictation.recovered", "dictation.cleanupModel"] {
+                   "dictation.micLost", "dictation.notSaved", "dictation.recovered", "dictation.cleanupModel", "dictation.speechModel"] {
             Services.flowBar.dismiss(notificationID: id)
         }
     }

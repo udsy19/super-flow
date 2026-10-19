@@ -106,6 +106,14 @@ enum DictationNotices {
                             variant: .success, timeout: nil, actions: [openHistory])
     }
 
+    /// The chosen speech model is installed but won't load.
+    static func speechModelFailed(fallback: Bool) -> FlowBarNotification {
+        FlowBarNotification(id: "dictation.speechModel", title: "The speech model couldn't load",
+                            subtitle: fallback ? "Dictation uses another downloaded model for now. Check it in Settings › Models."
+                                               : "Dictation can't start until it's fixed. Check it in Settings › Models.",
+                            variant: fallback ? .alert : .error, timeout: nil, actions: [openModels])
+    }
+
     /// The cleanup model is installed but won't load.
     static func cleanupModelFailed() -> FlowBarNotification {
         FlowBarNotification(id: "dictation.cleanupModel", title: "The cleanup model couldn't load",
