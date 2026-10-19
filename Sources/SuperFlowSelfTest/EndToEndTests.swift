@@ -581,8 +581,10 @@ private func e2eWords(_ text: String) -> String { text.lowercased().components(s
           "nothing is written to disk while History is off")
     services.hotkeys.send(.released(.pushToTalk, fnChord))
     check(e2eWait { c.status == .idle } && services.store.lastDictation == nil, "and nothing is saved")
+    let insertions = services.inserter.inserted.count
     c.pasteLastTranscript()
-    check(e2eWait { services.inserter.inserted.last == "Private thought." }, "paste-last works from memory")
+    check(e2eWait { services.inserter.inserted.count == insertions + 1 } && services.inserter.inserted.last == "Private thought.",
+          "paste-last works from memory")
 }
 
 /// A History whose dictation saves fail like a full disk; everything else goes to the real store.
