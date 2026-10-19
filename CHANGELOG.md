@@ -34,3 +34,15 @@ All notable changes to Super Flow are recorded here. The format follows Keep a C
   migrated, goes to Backup and every row that can still be read is copied into the fresh store; a database that is
   merely busy, read-only or on a full disk is left untouched and the session runs in memory, with a card saying so.
   Migration steps commit atomically, and a full disk is reported as "Storage Full".
+- A meeting is never "no recording found": audio whose row was lost becomes "Recovered recording from …" instead of
+  being deleted, and the next launch says which recording it recovered. Final audio files are encoded chunk by chunk
+  into a temporary file that atomically replaces the old one before any chunk is deleted, so an interrupted finalize
+  can't lose audio; deleting a meeting removes its audio before its row. A child process killed with SIGKILL
+  mid-meeting is recovered in the self-test.
+- Meetings stop by themselves before the disk fills (and don't start without room), keeping everything recorded;
+  stop properly when the Mac sleeps or the user session switches; save the transcript when Super Flow quits; restart a
+  microphone that went quiet (unplugged, switched) and say so when it stays quiet; and say when only the microphone is
+  being recorded because system audio isn't allowed.
+- Utterances the speech engine failed on during a meeting are transcribed again from disk afterwards; a meeting page
+  with no transcript offers "Retry transcript" from the saved audio, and one without a summary offers "Generate
+  summary" instead of saying the meeting was too short.

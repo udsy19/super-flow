@@ -474,6 +474,9 @@ public struct ActionItem: Codable, Hashable, Identifiable, Sendable {
 
 /// The notes the summarizer writes (§20.7.5 template).
 public struct MeetingSummary: Codable, Hashable, Sendable {
+    /// Below this many words of transcript plus notes there is nothing worth summarising.
+    public static let minimumWords = 25
+
     public var title: String
     public var summary: String
     public var decisions: [String]

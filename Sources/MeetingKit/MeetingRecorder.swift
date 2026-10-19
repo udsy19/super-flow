@@ -1,13 +1,23 @@
+import AppKit
 import Combine
 import Foundation
 import SuperFlowCore
 
 public enum MeetingRecorderError: LocalizedError, Equatable {
     case alreadyRecording
+    /// Too little free space to record (`MeetingRecorder.minimumFreeSpace`).
+    case storageFull
+    /// The meeting is being recorded or processed right now.
+    case busy
+    /// "Retry transcript" found no saved audio for the meeting.
+    case noAudio
 
     public var errorDescription: String? {
         switch self {
         case .alreadyRecording: "The Notetaker is already recording."
+        case .storageFull: "Your Mac is almost out of space. Free some space to record a meeting."
+        case .busy: "This meeting is still being processed."
+        case .noAudio: "The audio of this meeting is no longer available."
         }
     }
 }
@@ -34,13 +44,40 @@ public final class MeetingRecorder: MeetingRecording {
 
     /// Seconds between saves of the live transcript (a crash loses at most this much text; the audio is never lost).
     public var persistInterval: TimeInterval = 5
+    /// Free space below which a recording stops by itself and keeps everything so far (about an hour of both tracks as
+    /// raw chunks, and room to encode the final files); a recording doesn't start below it.
+    public var minimumFreeSpace: Int64 = 250 << 20
+    /// Free bytes on the volume that holds meeting audio; the self-test substitutes its own.
+    public var freeSpace: () -> Int64 = { SuperFlowPaths.freeSpace(at: SuperFlowPaths.meetingAudio) }
+    /// How often a recording checks the free space and that the microphone still delivers audio.
+    public var monitorInterval: TimeInterval = 5
+    /// No microphone frame for this long: the microphone is restarted once (its device went away or changed).
+    public var micSilenceLimit: TimeInterval = 10
 
     private let stateSubject = CurrentValueSubject<MeetingRecordingState, Never>(.idle)
     private var liveSubscribers: [UUID: AsyncStream<TranscriptSegment>.Continuation] = [:]
     private var session: RecordingSession?
     private var processing: [UUID: Task<Void, Never>] = [:]
+    private var observers: [(NotificationCenter, NSObjectProtocol)] = []
 
-    public init() {}
+    public init() {
+        // Sleep and fast user switching end the recording properly (§20.4.5); a quit saves the transcript so far (the
+        // audio is already on disk and the next launch finishes the meeting).
+        let workspace = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.willSleepNotification, NSWorkspace.sessionDidResignActiveNotification] {
+            observers.append((workspace, workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.macWillPause() }
+            }))
+        }
+        let app = NotificationCenter.default
+        observers.append((app, app.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { if let self, let session = self.session { self.persist(session) } }
+        }))
+    }
+
+    deinit {
+        for (center, observer) in observers { center.removeObserver(observer) }
+    }
 
     public var state: MeetingRecordingState { stateSubject.value }
     public var stateChanges: AnyPublisher<MeetingRecordingState, Never> { stateSubject.eraseToAnyPublisher() }
@@ -64,6 +101,7 @@ public final class MeetingRecorder: MeetingRecording {
     @discardableResult
     public func start(_ detected: DetectedMeeting?) async throws -> Meeting {
         guard state.acceptsNewRecording else { throw MeetingRecorderError.alreadyRecording }
+        guard freeSpace() >= minimumFreeSpace else { throw MeetingRecorderError.storageFull }
         let previous = state
         setState(.starting)
         let event = detected?.calendarEvent
@@ -89,15 +127,24 @@ public final class MeetingRecorder: MeetingRecording {
             try await Services.audio.startMicrophone()
             session.holdsMicrophone = true
         } catch { micError = error }
+        var systemError: Error?
         do {
             try await Services.audio.startSystemAudio()
             session.holdsSystemAudio = true
         } catch {
             Log.meetings.error("System audio isn't being captured: \(error.localizedDescription, privacy: .public)")
             if let micError { return try abandon(session, restoring: previous, error: micError) }
+            systemError = error
         }
         if let micError { Log.meetings.error("Microphone isn't being captured: \(micError.localizedDescription, privacy: .public)") }
         do { try Services.meetings.save(meeting) } catch { return try abandon(session, restoring: previous, error: error) }
+        if systemError != nil {
+            // Mic only: say so instead of quietly recording half the meeting.
+            let method = Services.audio.systemAudioMethod
+            Services.flowBar?.show(MeetingNotices.systemAudioOff(canTurnOn: method != .unsupported)) { _ in
+                Permissions.open(method == .screenCaptureKit ? .screenRecording : .audioCapture)
+            }
+        }
 
         Services.models?.setUserBusy(true)
         Services.flowBar?.setMeetingPhase(.recording(wordCount: 0, startedAt: meeting.startedAt))
@@ -109,9 +156,60 @@ public final class MeetingRecorder: MeetingRecording {
             Log.meetings.info("Maximum recording length reached")
             await self.stop()
         }
+        session.monitorTask = Task { [weak self] in await self?.monitor(session) }
         setState(.recording(meetingID: meeting.id))
         Log.meetings.info("Recording meeting \(meeting.id, privacy: .public)")
         return meeting
+    }
+
+    /// While recording: stops before the disk fills up (everything so far is kept), and restarts a microphone that
+    /// went quiet because its device went away or changed, saying so when that doesn't bring it back.
+    private func monitor(_ session: RecordingSession) async {
+        var micRestartedAt: Date?
+        while !Task.isCancelled, self.session === session {
+            try? await Task.sleep(nanoseconds: UInt64(monitorInterval * 1_000_000_000))
+            guard !Task.isCancelled, self.session === session, case .recording = state else { return }
+            if freeSpace() < minimumFreeSpace {
+                await stopForStorage(session)
+                return
+            }
+            guard session.holdsMicrophone else { continue }
+            let lastMic = session.lastFrameAt[.mic] ?? session.startedAt
+            guard Date().timeIntervalSince(lastMic) > micSilenceLimit else { micRestartedAt = nil; continue }
+            if let restarted = micRestartedAt {
+                if Date().timeIntervalSince(restarted) > micSilenceLimit, !session.reportedMicLoss {
+                    session.reportedMicLoss = true
+                    Services.flowBar?.show(MeetingNotices.microphoneLost()) { _ in Permissions.open(.microphone) }
+                }
+                continue
+            }
+            Log.meetings.info("No microphone audio for \(Int(self.micSilenceLimit)) s; restarting the microphone")
+            micRestartedAt = Date()
+            Services.audio.stopMicrophone()
+            do { try await Services.audio.startMicrophone() } catch {
+                Log.meetings.error("The microphone didn't come back: \(error.localizedDescription, privacy: .public)")
+                session.holdsMicrophone = false
+                session.reportedMicLoss = true
+                Services.flowBar?.show(MeetingNotices.microphoneLost()) { _ in Permissions.open(.microphone) }
+            }
+        }
+    }
+
+    /// The disk is (nearly) full: stop now, while the chunks written so far can still be encoded and the row saved.
+    private func stopForStorage(_ session: RecordingSession) async {
+        guard self.session === session, case .recording(let id) = state else { return }
+        Log.meetings.error("Stopping the recording: the disk is almost full")
+        Services.flowBar?.show(MeetingNotices.storageFull()) { _ in Services.hub?.showMeeting(id) }
+        await stop()
+    }
+
+    /// The Mac is going to sleep or the user session is switching away: finish the recording rather than leave a gap.
+    private func macWillPause() {
+        guard let session, case .recording(let id) = state else { return }
+        Log.meetings.info("The Mac is going to sleep; stopping the recording")
+        persist(session)
+        Services.flowBar?.show(MeetingNotices.stoppedForSleep()) { _ in Services.hub?.showMeeting(id) }
+        Task { await stop() }
     }
 
     /// Nothing could be captured or saved: undo the start and report why.
@@ -134,12 +232,13 @@ public final class MeetingRecorder: MeetingRecording {
     private func handle(_ frame: AudioFrame, in session: RecordingSession) async {
         let origin = session.origin ?? frame.time
         session.origin = origin
+        session.lastFrameAt[frame.channel] = Date()
         guard let channel = session.channels[frame.channel] else { return }
         // Dictated words never enter the meeting (local-models.md §8.3): the mic is muted while a dictation records.
         let muted = frame.channel == .mic && (Services.dictation?.status.isRecording ?? false)
-        for utterance in await channel.append(frame.samples, at: frame.time - origin, muted: muted) {
-            enqueue(utterance, channel: frame.channel, in: session)
-        }
+        let appended = await channel.append(frame.samples, at: frame.time - origin, muted: muted)
+        for utterance in appended.utterances { enqueue(utterance, channel: frame.channel, in: session) }
+        if appended.writeFailed { await stopForStorage(session) }
     }
 
     /// Transcribes utterances of one channel in order, one at a time.
@@ -147,9 +246,10 @@ public final class MeetingRecorder: MeetingRecording {
         let previous = session.transcription[channel]
         session.transcription[channel] = Task { [weak self] in
             await previous?.value
-            guard let self, !session.discarded,
-                  let segment = await self.recognize(utterance, channel: channel, vocabulary: session.vocabulary),
-                  !session.discarded else { return }
+            guard let self, !session.discarded else { return }
+            let recognition = await self.recognize(utterance, channel: channel, vocabulary: session.vocabulary)
+            if case .failed = recognition { session.recognitionFailures += 1 }
+            guard case .segment(let segment) = recognition, !session.discarded else { return }
             session.meeting.segments.append(segment)
             session.wordCount += Dictation.countWords(segment.text)
             self.publish(segment)
@@ -161,19 +261,26 @@ public final class MeetingRecorder: MeetingRecording {
         }
     }
 
-    /// One utterance → one final segment; nil when the engine hears no speech in it (its VAD) or returns nothing.
-    private func recognize(_ utterance: Utterance, channel: AudioChannel, vocabulary: [String]) async -> TranscriptSegment? {
-        guard let speech = Services.speech else { return nil }
+    /// What the engine made of one utterance: a final segment, no speech (its VAD, or empty text), or an error (the
+    /// engine isn't ready or failed: the audio stays on disk and is transcribed again after the meeting).
+    private enum Recognition {
+        case segment(TranscriptSegment)
+        case noSpeech
+        case failed(Error)
+    }
+
+    private func recognize(_ utterance: Utterance, channel: AudioChannel, vocabulary: [String]) async -> Recognition {
+        guard let speech = Services.speech else { return .failed(SpeechError.engineUnavailable("No speech engine.")) }
         let clip = AudioClip(samples: utterance.samples, startTime: utterance.start)
         do {
             let transcript = try await speech.transcribe(clip, options: TranscriptionOptions(vocabulary: vocabulary), priority: .meeting)
             let text = transcript.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            return text.isEmpty ? nil : TranscriptSegment(channel: channel, start: utterance.start, end: utterance.end, text: text)
+            return text.isEmpty ? .noSpeech : .segment(TranscriptSegment(channel: channel, start: utterance.start, end: utterance.end, text: text))
         } catch SpeechError.noSpeech {
-            return nil
+            return .noSpeech
         } catch {
             Log.meetings.error("Meeting transcription failed: \(error.localizedDescription, privacy: .public)")
-            return nil
+            return .failed(error)
         }
     }
 
@@ -245,6 +352,7 @@ public final class MeetingRecorder: MeetingRecording {
         setState(.stopping(meetingID: id))
         Services.flowBar?.setMeetingPhase(.stopping)
         session.limitTask?.cancel()
+        session.monitorTask?.cancel()
         releaseCapture(session)
         for (channel, recorder) in session.channels {
             if let utterance = await recorder.finish() { enqueue(utterance, channel: channel, in: session) }
@@ -260,10 +368,49 @@ public final class MeetingRecorder: MeetingRecording {
         processing[id] = Task { [weak self] in await self?.process(id, folder: session.folder, live: session) }
     }
 
+    // MARK: Retry
+
+    public func retryTranscript(of id: UUID) async throws {
+        try ensureIdle(id)
+        let folder = SuperFlowPaths.meetingAudio.appendingPathComponent(id.uuidString)
+        guard AudioChannel.allCases.contains(where: { !MeetingAudioFiles.samples(folder: folder, channel: $0, fromSample: 0).isEmpty }) else {
+            throw MeetingRecorderError.noAudio
+        }
+        var failure: Error?
+        let task = Task { [weak self] in
+            guard let self else { return }
+            failure = await self.process(id, folder: folder, live: nil, whole: true)
+        }
+        processing[id] = task
+        await task.value
+        if let failure { throw failure }
+    }
+
+    public func regenerateNotes(of id: UUID) async throws {
+        try ensureIdle(id)
+        var failure: Error?
+        let task = Task { [weak self] in
+            guard let self else { return }
+            defer { self.finishedProcessing(id) }
+            await Self.prepareNotesModel()
+            do { try await self.writeNotes(id) } catch { failure = error }
+        }
+        processing[id] = task
+        await task.value
+        if let failure { throw failure }
+    }
+
+    /// A retry runs only on a meeting that is neither being recorded nor processed.
+    private func ensureIdle(_ id: UUID) throws {
+        guard Services.meetings.meeting(id) != nil else { throw StoreError.notFound(id) }
+        guard session?.meeting.id != id, processing[id] == nil else { throw MeetingRecorderError.busy }
+    }
+
     public func discard() async {
         if let session {
             session.discarded = true
             session.limitTask?.cancel()
+            session.monitorTask?.cancel()
             releaseCapture(session)
             for recorder in session.channels.values { _ = await recorder.finish() }
             for task in session.transcription.values { task.cancel() }
@@ -306,35 +453,35 @@ public final class MeetingRecorder: MeetingRecording {
 
     // MARK: After the meeting
 
-    private func process(_ id: UUID, folder: URL, live: RecordingSession?) async {
-        defer {
-            processing[id] = nil
-            if session == nil, processing.isEmpty {
-                setState(.idle)
-                if !Defaults[.keepModelsInMemory] { Services.cleanup?.unload(role: .notes) }
-            }
-        }
+    /// The post-meeting stages: the last transcriptions (or, after a crash or for "Retry transcript", the audio from disk),
+    /// speakers, final audio files, notes. Returns why nothing could be transcribed when `whole` found no speech engine.
+    @discardableResult
+    private func process(_ id: UUID, folder: URL, live: RecordingSession?, whole: Bool = false) async -> Error? {
+        defer { finishedProcessing(id) }
         stage(id, Stage.processingAudio)
-        let system = await Task.detached(priority: .utility) { ChunkedTrackWriter.read(folder: folder, channel: .system) }.value
 
         stage(id, Stage.transcribing)
+        var failure: Error?
         if let live {
             for task in live.transcription.values { await task.value }
             await live.mapTask?.value
             persist(live)
+            // Utterances the engine failed on during the meeting: their audio is on disk, so transcribe it all again.
+            if live.recognitionFailures > 0 { failure = await transcribeFromDisk(id, folder: folder, whole: true) }
         } else {
-            await transcribeTail(of: id, folder: folder)
+            failure = await transcribeFromDisk(id, folder: folder, whole: whole)
         }
-        guard !Task.isCancelled, Services.meetings.meeting(id) != nil else { return }
+        guard !Task.isCancelled, Services.meetings.meeting(id) != nil else { return failure }
 
         stage(id, Stage.refining)
+        let system = await Task.detached(priority: .utility) { MeetingAudioFiles.samples(folder: folder, channel: .system) }.value
         var voices: [TranscriptSegment] = []
         if Defaults[.notetakerAttributeNamesEnabled], !system.isEmpty, let speech = Services.speech {
             do { voices = try await speech.diarize(AudioClip(samples: system)) } catch {
                 Log.meetings.error("Speaker split failed: \(error.localizedDescription, privacy: .public)")
             }
         }
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled else { return failure }
         update(id) { $0.assignSpeakers(voices: voices) }
         let tracks = await Task.detached(priority: .utility) { () -> [AudioTrack] in
             AudioChannel.allCases.compactMap { channel in
@@ -344,24 +491,39 @@ public final class MeetingRecorder: MeetingRecording {
                 }
             }
         }.value
-        guard !Task.isCancelled else { return }
-        update(id) { $0.tracks = tracks }
+        guard !Task.isCancelled else { return failure }
+        // A track that couldn't be encoded keeps its chunks (and its place in the list) for the next attempt.
+        update(id) { row in row.tracks = tracks.isEmpty ? row.tracks : tracks }
 
-        guard let summarizer = Services.summarizer, summarizer.isModelReady, let meeting = Services.meetings.meeting(id) else { return }
-        do {
-            stage(id, Stage.summarizing)
-            if let summarizer = summarizer as? MeetingSummarizer { try await summarizer.mapChunks(of: meeting) }
-            stage(id, Stage.generating)
-            let summary = try await summarizer.summarize(Services.meetings.meeting(id) ?? meeting)
-            guard !Task.isCancelled else { return }
-            update(id) { row in
-                row.summary = summary
-                if row.calendarEventID == nil, Self.untitledTitles.contains(row.title), !summary.title.isEmpty { row.title = summary.title }
-            }
-            for item in summary.actionItems { try Services.meetings.save(item) }
-        } catch {
+        do { try await writeNotes(id) } catch {
             Log.meetings.info("No notes for \(id, privacy: .public): \(error.localizedDescription, privacy: .public)")
         }
+        return failure
+    }
+
+    private func finishedProcessing(_ id: UUID) {
+        processing[id] = nil
+        if session == nil, processing.isEmpty {
+            setState(.idle)
+            if !Defaults[.keepModelsInMemory] { Services.cleanup?.unload(role: .notes) }
+        }
+    }
+
+    /// The notes stages ("Summarizing meeting…", "Generating summary…"); throws why there are none (no model, too short).
+    private func writeNotes(_ id: UUID) async throws {
+        guard let summarizer = Services.summarizer else { throw MeetingNotesError.modelNotReady }
+        guard let meeting = Services.meetings.meeting(id) else { throw StoreError.notFound(id) }
+        stage(id, Stage.summarizing)
+        if let summarizer = summarizer as? MeetingSummarizer { try await summarizer.mapChunks(of: meeting) }
+        stage(id, Stage.generating)
+        let summary = try await summarizer.summarize(Services.meetings.meeting(id) ?? meeting)
+        guard !Task.isCancelled else { throw CancellationError() }
+        update(id) { row in
+            row.summary = summary
+            if row.calendarEventID == nil, Self.untitledTitles.contains(row.title), !summary.title.isEmpty { row.title = summary.title }
+        }
+        let existing = Set(Services.meetings.actionItems.filter { $0.meetingID == id }.map(\.text))
+        for item in summary.actionItems where !existing.contains(item.text) { try Services.meetings.save(item) }
     }
 
     private func stage(_ id: UUID, _ stage: String) {
@@ -387,46 +549,81 @@ public final class MeetingRecorder: MeetingRecording {
         }
     }
 
-    /// After a crash: transcribes what was recorded after the last saved segment of each channel.
-    private func transcribeTail(of id: UUID, folder: URL) async {
-        guard let meeting = Services.meetings.meeting(id) else { return }
+    /// Transcribes recorded audio from disk: after a crash only what follows the last saved segment of each channel;
+    /// with `whole`, everything (the result replaces the transcript unless the engine failed on more of it than before).
+    /// Returns the engine's error when it couldn't transcribe anything.
+    private func transcribeFromDisk(_ id: UUID, folder: URL, whole: Bool) async -> Error? {
+        guard let meeting = Services.meetings.meeting(id) else { return nil }
         await Self.prepareSpeechEngine()
         await Self.prepareNotesModel()
         let vocabulary = vocabulary(for: meeting)
         var added: [TranscriptSegment] = []
+        var failures: [Error] = []
+        var attempts = 0
         for channel in AudioChannel.allCases {
-            let from = Int((meeting.segments.filter { $0.channel == channel }.map(\.end).max() ?? 0) * Double(AudioClip.sampleRate))
-            let samples = await Task.detached(priority: .utility) { ChunkedTrackWriter.read(folder: folder, channel: channel, fromSample: from) }.value
+            let lastSaved = meeting.segments.filter { $0.channel == channel }.map(\.end).max() ?? 0
+            let from = whole ? 0 : Int(lastSaved * Double(AudioClip.sampleRate))
+            let samples = await Task.detached(priority: .utility) { MeetingAudioFiles.samples(folder: folder, channel: channel, fromSample: from) }.value
             var segmenter = SpeechSegmenter(startSample: from)
             let utterances = segmenter.append(samples) + [segmenter.flush()].compactMap { $0 }
             for utterance in utterances {
-                if let segment = await recognize(utterance, channel: channel, vocabulary: vocabulary) { added.append(segment) }
+                attempts += 1
+                switch await recognize(utterance, channel: channel, vocabulary: vocabulary) {
+                case .segment(let segment): added.append(segment)
+                case .noSpeech: break
+                case .failed(let error): failures.append(error)
+                }
             }
         }
-        if !added.isEmpty { update(id) { $0.segments = ($0.segments + added).sorted { $0.start < $1.start } } }
+        if whole {
+            let before = meeting.segments.filter(\.isFinal).reduce(0) { $0 + Dictation.countWords($1.text) }
+            let after = added.reduce(0) { $0 + Dictation.countWords($1.text) }
+            if failures.isEmpty || after > before { update(id) { $0.segments = added.sorted { $0.start < $1.start } } }
+        } else if !added.isEmpty {
+            update(id) { $0.segments = ($0.segments + added).sorted { $0.start < $1.start } }
+        }
+        return attempts > 0 && failures.count == attempts ? failures.first : nil
     }
 
-    /// Finishes meetings a crash or quit interrupted: their chunk files are still in `Audio/Meetings/<id>/`. Each gets an end
-    /// time, the transcript of its untranscribed tail, speakers, final audio files and notes, like a normal stop.
+    /// Finishes recordings a crash or quit interrupted: their chunk files are still in `Audio/Meetings/<id>/`. Each gets
+    /// an end time, the transcript of its untranscribed tail, speakers, final audio files and notes, like a normal stop.
+    /// Audio whose row is gone (a store rebuilt from a damaged file) becomes a "Recovered recording from …" meeting:
+    /// recorded audio is never deleted here.
     public func recoverInterruptedMeetings() {
+        let fm = FileManager.default
         let root = SuperFlowPaths.meetingAudio
-        let folders = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
+        let folders = (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: [.creationDateKey])) ?? []
         for folder in folders {
             guard let id = UUID(uuidString: folder.lastPathComponent), id != session?.meeting.id, processing[id] == nil else { continue }
-            let chunks = AudioChannel.allCases.flatMap { ChunkedTrackWriter.chunks(in: folder, channel: $0) }
-            guard !chunks.isEmpty else { continue }
-            guard var meeting = Services.meetings.meeting(id) else {
-                try? FileManager.default.removeItem(at: folder)
-                continue
+            let samples = AudioChannel.allCases.map { channel in
+                ChunkedTrackWriter.chunks(in: folder, channel: channel).reduce(0) { $0 + ChunkedTrackWriter.sampleCount(of: $1) }
+            }.max() ?? 0
+            let chunks = AudioChannel.allCases.contains { !ChunkedTrackWriter.chunks(in: folder, channel: $0).isEmpty }
+            let finals = AudioChannel.allCases.contains { fm.fileExists(atPath: folder.appendingPathComponent(MeetingAudioFiles.fileName($0)).path) }
+            var meeting: Meeting
+            if let row = Services.meetings.meeting(id) {
+                guard chunks else { continue }
+                meeting = row
+            } else {
+                // Less than a second of audio and no final file: nothing anyone could want.
+                guard samples >= AudioClip.sampleRate || finals else {
+                    try? fm.removeItem(at: folder)
+                    continue
+                }
+                let duration = Double(samples) / Double(AudioClip.sampleRate)
+                let created = (try? folder.resourceValues(forKeys: [.creationDateKey]))?.creationDate ?? Date().addingTimeInterval(-duration)
+                meeting = Meeting(id: id, title: MeetingNotices.recoveredTitle(created), startedAt: created)
+                Log.meetings.info("Recovering audio without a meeting row: \(id, privacy: .public)")
             }
             if meeting.endedAt == nil {
-                let seconds = AudioChannel.allCases.map { channel in
-                    ChunkedTrackWriter.chunks(in: folder, channel: channel).reduce(0) { $0 + ChunkedTrackWriter.sampleCount(of: $1) }
-                }.max() ?? 0
-                meeting.endedAt = meeting.startedAt.addingTimeInterval(Double(seconds) / Double(AudioClip.sampleRate))
-                try? Services.meetings.save(meeting)
+                meeting.endedAt = meeting.startedAt.addingTimeInterval(Double(samples) / Double(AudioClip.sampleRate))
+            }
+            do { try Services.meetings.save(meeting) } catch {
+                Log.meetings.error("Couldn't save the recovered meeting \(id, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                continue
             }
             Log.meetings.info("Recovering interrupted meeting \(id, privacy: .public)")
+            Services.flowBar?.show(MeetingNotices.recovered(startedAt: meeting.startedAt)) { _ in Services.hub?.showMeeting(id) }
             if session == nil { setState(.processing(meetingID: id, stage: Stage.processingAudio)) }
             processing[id] = Task { [weak self] in await self?.process(id, folder: folder, live: nil) }
         }
@@ -508,8 +705,16 @@ final class RecordingSession {
     var holdsMicrophone = false
     var holdsSystemAudio = false
     var mappedChunks = 0
+    /// When the recording began, for the microphone watchdog before the first frame.
+    let startedAt = Date()
+    /// When each channel last delivered a frame.
+    var lastFrameAt: [AudioChannel: Date] = [:]
+    var reportedMicLoss = false
+    /// Utterances the engine failed on (not ready, or an error): the meeting is transcribed again from disk afterwards.
+    var recognitionFailures = 0
     var frameTask: Task<Void, Never>?
     var limitTask: Task<Void, Never>?
+    var monitorTask: Task<Void, Never>?
     var persistTask: Task<Void, Never>?
     var mapTask: Task<Void, Never>?
     var transcription: [AudioChannel: Task<Void, Never>] = [:]
@@ -535,19 +740,22 @@ actor ChannelRecorder {
     }
 
     /// Writes a block that starts `offset` seconds into the recording, filling any gap before it with silence so both
-    /// tracks stay on the meeting's timeline; returns the utterances that closed.
-    func append(_ samples: [Float], at offset: TimeInterval, muted: Bool) -> [Utterance] {
-        guard !finished else { return [] }
+    /// tracks stay on the meeting's timeline; returns the utterances that closed, and whether the disk refused the block
+    /// (full, or the folder went away): the recording then stops with what it has.
+    func append(_ samples: [Float], at offset: TimeInterval, muted: Bool) -> (utterances: [Utterance], writeFailed: Bool) {
+        guard !finished else { return ([], false) }
         var block = muted ? [Float](repeating: 0, count: samples.count) : samples
         let gap = Int(offset * Double(AudioClip.sampleRate)) - writer.totalSamples
         if gap > AudioClip.sampleRate / 10, gap < 3 * 3600 * AudioClip.sampleRate {
             block = [Float](repeating: 0, count: gap) + block
         }
+        var failed = false
         do { try writer.append(block) } catch {
             if !reportedWriteError { Log.meetings.error("Couldn't write meeting audio: \(error.localizedDescription, privacy: .public)") }
             reportedWriteError = true
+            failed = true
         }
-        return segmenter.append(block)
+        return (segmenter.append(block), failed)
     }
 
     func finish() -> Utterance? {

@@ -26,6 +26,13 @@ SuperFlowPaths.base = FileManager.default.temporaryDirectory.appendingPathCompon
 let defaultsSuite = "superflow-selftest-\(UUID().uuidString)"
 Defaults.store = UserDefaults(suiteName: defaultsSuite)!
 
+// A crash-test child (see `CrashChild`): the parent's folder and settings suite, one scenario, killed by the parent.
+if let i = CommandLine.arguments.firstIndex(of: CrashChild.flag), CommandLine.arguments.count > i + 3 {
+    SuperFlowPaths.base = URL(fileURLWithPath: CommandLine.arguments[i + 2])
+    Defaults.store = UserDefaults(suiteName: CommandLine.arguments[i + 3])!
+    MainActor.assumeIsolated { CrashChild.run(CommandLine.arguments[i + 1]) }
+}
+
 // Each module owns Sources/SuperFlowSelfTest/<Module>Tests.swift and its register function.
 registerCoreTests()
 registerFlowStoreTests()
@@ -48,5 +55,9 @@ for (name, run) in SelfTest.cases where only.isEmpty || only.contains(where: nam
 }
 try? FileManager.default.removeItem(at: SuperFlowPaths.base)
 UserDefaults.standard.removePersistentDomain(forName: defaultsSuite)
+// cfprefsd leaves the emptied domain behind as a plist named after this run's suite; remove exactly that file.
+CFPreferencesAppSynchronize(defaultsSuite as CFString)
+try? FileManager.default.removeItem(at: FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
+    .appendingPathComponent("Preferences/\(defaultsSuite).plist"))
 print(failures == 0 ? "All self-tests passed." : "\(failures) failure(s).")
 exit(failures == 0 ? 0 : 1)

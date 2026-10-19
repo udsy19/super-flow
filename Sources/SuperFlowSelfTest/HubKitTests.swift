@@ -5,6 +5,23 @@ import SuperFlowCore
 import HubKit
 
 func registerHubKitTests() {
+    SelfTest.cases.append(("HubKit.meetingRetryOffers", { MainActor.assumeIsolated {
+        let words = "We agreed to ship the beta on Friday and Priya sends the pricing proposal tomorrow morning before the review"
+        let long = Meeting(title: "Sync", endedAt: Date(), tracks: [AudioTrack(channel: .mic, file: "mic.m4a")],
+                           segments: [TranscriptSegment(start: 0, end: 5, text: words), TranscriptSegment(start: 6, end: 9, text: words)])
+        check(MeetingRetry.canSummarize(long) && !MeetingRetry.canRetryTranscript(long), "a transcript without notes offers Generate summary")
+        var short = long
+        short.segments = [TranscriptSegment(start: 0, end: 1, text: "Hello there.")]
+        check(!MeetingRetry.canSummarize(short), "too short to summarize: no button")
+        var summarized = long
+        summarized.summary = MeetingSummary(title: "Sync", summary: "Done.")
+        check(!MeetingRetry.canSummarize(summarized), "a summary is there")
+        var silent = long
+        silent.segments = []
+        check(MeetingRetry.canRetryTranscript(silent), "no transcript but audio: Retry transcript")
+        silent.audioDeletedAt = Date()
+        check(!MeetingRetry.canRetryTranscript(silent), "audio gone: nothing to retry")
+    } }))
     SelfTest.cases.append(("HubKit.dates", {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC")!

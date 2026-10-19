@@ -66,9 +66,6 @@ public enum MeetingNotesError: LocalizedError, Equatable {
 public final class MeetingSummarizer: MeetingSummarizing {
     public static let shared = MeetingSummarizer(model: CleanupNotesModel())
 
-    /// Below this many words of transcript plus notes there is nothing worth summarising.
-    public static let minimumWords = 25
-
     public let model: NotesLanguageModel
     /// Chunk notes by the segments they came from, so the rolling map during the meeting is reused at the end.
     private var cache: [ChunkKey: ChunkNotes] = [:]
@@ -163,7 +160,7 @@ public final class MeetingSummarizer: MeetingSummarizing {
         let notes = meeting.notes.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !segments.isEmpty || !notes.isEmpty else { throw MeetingNotesError.noTranscript }
         let words = segments.reduce(0) { $0 + Dictation.countWords($1.text) } + Dictation.countWords(notes)
-        guard words >= Self.minimumWords else { throw MeetingNotesError.tooShort }
+        guard words >= MeetingSummary.minimumWords else { throw MeetingNotesError.tooShort }
         return segments
     }
 

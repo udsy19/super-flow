@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import Foundation
 import CleanupKit
+import FlowStore
 import llama
 import MeetingKit
 import SuperFlowCore
@@ -17,6 +18,12 @@ func registerMeetingKitTests() {
     SelfTest.cases.append(("MeetingKit.recordEndToEnd", { MainActor.assumeIsolated { meetingRecordEndToEnd() } }))
     SelfTest.cases.append(("MeetingKit.startFailuresAndDiscard", { MainActor.assumeIsolated { meetingStartFailuresAndDiscard() } }))
     SelfTest.cases.append(("MeetingKit.crashRecovery", { MainActor.assumeIsolated { meetingCrashRecovery() } }))
+    SelfTest.cases.append(("MeetingKit.killedMidRecording", { MainActor.assumeIsolated { meetingKilledMidRecording() } }))
+    SelfTest.cases.append(("MeetingKit.interruptedFinalize", { MainActor.assumeIsolated { meetingInterruptedFinalize() } }))
+    SelfTest.cases.append(("MeetingKit.systemAudioDenied", { MainActor.assumeIsolated { meetingSystemAudioDenied() } }))
+    SelfTest.cases.append(("MeetingKit.diskFull", { MainActor.assumeIsolated { meetingDiskFull() } }))
+    SelfTest.cases.append(("MeetingKit.micLostAndSleep", { MainActor.assumeIsolated { meetingMicLostAndSleep() } }))
+    SelfTest.cases.append(("MeetingKit.retryTranscriptAndNotes", { MainActor.assumeIsolated { meetingRetries() } }))
     SelfTest.cases.append(("MeetingKit.speakers", { MainActor.assumeIsolated { meetingSpeakers() } }))
     SelfTest.cases.append(("MeetingKit.summarizer", { MainActor.assumeIsolated { meetingSummarizer() } }))
     SelfTest.cases.append(("MeetingKit.export", { MainActor.assumeIsolated { meetingExport() } }))
@@ -106,9 +113,11 @@ private func meetingRMS(_ samples: ArraySlice<Float>) -> Float {
     var level: AnyPublisher<Float, Never> { Just(0).eraseToAnyPublisher() }
     var deviceChanges: AnyPublisher<[AudioDevice], Never> { Just(devices).eraseToAnyPublisher() }
 
+    var micStarts = 0
     func startMicrophone() async throws {
         if let micError { throw micError }
         micHolders += 1
+        micStarts += 1
     }
     func stopMicrophone() { micHolders = max(0, micHolders - 1) }
     func startSystemAudio() async throws {
@@ -134,8 +143,12 @@ private func meetingRMS(_ samples: ArraySlice<Float>) -> Float {
     func prepare(modelID: String) async throws {}
     func unload() {}
 
+    /// Set to make every transcription fail (the engine isn't ready).
+    var transcribeError: Error?
+
     func transcribe(_ audio: AudioClip, options: TranscriptionOptions, priority: SpeechPriority) async throws -> Transcript {
         priorities.append(priority)
+        if let transcribeError { throw transcribeError }
         let frequency = meetingFrequency(audio.samples)
         guard let match = MeetingFixture.utterances.min(by: { abs($0.frequency - frequency) < abs($1.frequency - frequency) }),
               abs(match.frequency - frequency) < 25 else { throw SpeechError.noSpeech }
@@ -208,7 +221,8 @@ private func meetingRMS(_ samples: ArraySlice<Float>) -> Float {
     func setLevel(_ level: Float) {}
     func setEdge(_ edge: FlowBarEdge) {}
     func setRestingVisible(_ visible: Bool) {}
-    func show(_ notification: FlowBarNotification, onAction: @escaping (String) -> Void) {}
+    var notifications: [FlowBarNotification] = []
+    func show(_ notification: FlowBarNotification, onAction: @escaping (String) -> Void) { notifications.append(notification) }
     func dismiss(notificationID: String) {}
     func showMeetingPrompt(_ prompt: MeetingPrompt, onAnswer: @escaping (MeetingPromptAnswer) -> Void) {
         prompts.append(prompt)
@@ -672,6 +686,10 @@ private func speakerLines(_ meeting: Meeting) -> [String] {
     }
     let orphan = SuperFlowPaths.meetingAudio(UUID())
     try? Data([0, 0]).write(to: orphan.appendingPathComponent("mic-00000.pcm"))
+    // A recording whose row is gone (the store was rebuilt from a damaged file): its audio is never thrown away.
+    let lostID = UUID()
+    let lost = SuperFlowPaths.meetingAudio(lostID)
+    for channel in AudioChannel.allCases { try? ChunkedTrackWriter(folder: lost, channel: channel).append(MeetingFixture.track(channel)) }
 
     recorder.recoverInterruptedMeetings()
     _ = complete(60) { await recorder.waitForProcessing() }
@@ -680,8 +698,202 @@ private func speakerLines(_ meeting: Meeting) -> [String] {
     check(saved.segments.map(\.text) == MeetingFixture.utterances.map(\.text), "the untranscribed tail is transcribed: \(saved.segments.map(\.text))")
     check(saved.speakers.count == 3 && saved.tracks.count == 2 && saved.summary != nil, "speakers, tracks and notes like a normal stop")
     check(ChunkedTrackWriter.chunks(in: folder, channel: .mic).isEmpty, "chunks encoded")
-    check(!FileManager.default.fileExists(atPath: orphan.path), "audio without a meeting row is removed")
+    check(!FileManager.default.fileExists(atPath: orphan.path), "a sliver of audio without a meeting row is removed")
+    let recovered = fakes.store.rows[lostID]
+    check(recovered?.title.hasPrefix("Recovered recording from ") == true && recovered?.segments.map(\.text) == MeetingFixture.utterances.map(\.text)
+              && recovered?.tracks.count == 2 && abs((recovered?.endedAt?.timeIntervalSince(recovered?.startedAt ?? Date()) ?? 0) - MeetingFixture.length) < 0.1,
+          "audio without a row becomes a recovered meeting with its transcript: \(String(describing: recovered?.title))")
+    check(fakes.flowBar.notifications.filter { $0.id == "meeting.recovered" }.count >= 2, "a card says each recording was recovered")
     check(recorder.state == .idle, "idle after recovery")
+}
+
+/// The real thing: a child process records a meeting into a real store and is killed with SIGKILL mid-sentence. The
+/// next launch (this process, on the child's folder) finds the audio and the saved transcript and finishes the meeting.
+@MainActor private func meetingKilledMidRecording() {
+    let base = SuperFlowPaths.support.appendingPathComponent("killed-meeting-\(UUID().uuidString)", isDirectory: true)
+    guard let line = CrashChild.runAndKill("meeting", base: base), let id = UUID(uuidString: line) else {
+        check(false, "the child recorded and was killed"); return
+    }
+    let savedBase = SuperFlowPaths.base
+    SuperFlowPaths.base = base
+    defer { SuperFlowPaths.base = savedBase }
+    let store = SQLiteStore.open()
+    check(store.openingNotice == nil, "the store survived the kill")
+    let folder = SuperFlowPaths.meetingAudio(id)
+    let recorded = AudioChannel.allCases.map { ChunkedTrackWriter.read(folder: folder, channel: $0).count }
+    check(recorded.allSatisfy { $0 >= 8 * AudioClip.sampleRate }, "every sample written before the kill is on disk: \(recorded)")
+    check(store.meeting(id)?.endedAt == nil && store.meeting(id)?.segments.isEmpty == false, "the row and its saved transcript are there")
+
+    let fakes = MeetingFakes()
+    defer { fakes.restore() }
+    Services.meetings = store
+    let recorder = MeetingRecorder()
+    recorder.recoverInterruptedMeetings()
+    _ = complete(60) { await recorder.waitForProcessing() }
+    guard let meeting = store.meeting(id) else { check(false, "recovered meeting kept"); return }
+    let expected = MeetingFixture.utterances.filter { $0.start + $0.duration <= 8.5 }.map(\.text)
+    check(meeting.segments.map(\.text) == expected, "the transcript is complete up to the kill: \(meeting.segments.map(\.text))")
+    check(meeting.endedAt != nil && meeting.tracks.count == 2 && meeting.tracks.allSatisfy { $0.duration >= 8 }, "ended, with both final tracks")
+    check(ChunkedTrackWriter.chunks(in: folder, channel: .mic).isEmpty && fakes.flowBar.notifications.contains { $0.id == "meeting.recovered" },
+          "chunks encoded, and the user is told")
+}
+
+/// Finalizing is interrupted after the new file went in, halfway through deleting the chunks: running it again keeps
+/// the complete file instead of re-encoding the leftover chunks over it.
+@MainActor private func meetingInterruptedFinalize() {
+    let folder = meetingTemporaryFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let writer = ChunkedTrackWriter(folder: folder, channel: .mic)
+    try? writer.append([Float](repeating: 0.2, count: 65 * AudioClip.sampleRate))
+    writer.close()
+    let chunks = ChunkedTrackWriter.chunks(in: folder, channel: .mic)
+    guard case .success(let track?)? = Result(catching: { try MeetingAudioFiles.finalize(folder: folder, channel: .mic) }) as Result? else {
+        check(false, "first finalize"); return
+    }
+    // Put the state back to "file in, marker written, first chunk deleted" by recreating the later chunks and the marker.
+    for chunk in chunks.dropFirst() { FileManager.default.createFile(atPath: chunk.path, contents: Data(count: 30 * AudioClip.sampleRate * 2)) }
+    FileManager.default.createFile(atPath: folder.appendingPathComponent("mic.encoded").path, contents: nil)
+    let again = try? MeetingAudioFiles.finalize(folder: folder, channel: .mic)
+    check(abs((again?.duration ?? 0) - track.duration) < 0.1, "the complete file is kept: \(String(describing: again?.duration)) vs \(track.duration)")
+    check(ChunkedTrackWriter.chunks(in: folder, channel: .mic).isEmpty
+              && !FileManager.default.fileExists(atPath: folder.appendingPathComponent("mic.encoded").path), "leftover chunks and the marker go")
+
+    // A crash while encoding leaves a partial file under another name: the chunks stay and the next run encodes them.
+    let second = meetingTemporaryFolder()
+    defer { try? FileManager.default.removeItem(at: second) }
+    try? ChunkedTrackWriter(folder: second, channel: .system).append([Float](repeating: 0.2, count: 3 * AudioClip.sampleRate))
+    FileManager.default.createFile(atPath: second.appendingPathComponent("system.encoding.m4a").path, contents: Data([1, 2, 3]))
+    let encoded = try? MeetingAudioFiles.finalize(folder: second, channel: .system)
+    check(abs((encoded?.duration ?? 0) - 3) < 0.01 && !FileManager.default.fileExists(atPath: second.appendingPathComponent("system.encoding.m4a").path),
+          "a half-written encode is replaced")
+}
+
+@MainActor private func meetingSystemAudioDenied() {
+    let fakes = MeetingFakes()
+    defer { fakes.restore() }
+    let recorder = MeetingRecorder()
+    fakes.audio.systemError = AudioError.permissionDenied
+    guard case .success(let meeting)? = complete(10, { try await recorder.start(nil) }) else { check(false, "mic-only recording starts"); return }
+    check(fakes.flowBar.notifications.map(\.id) == ["meeting.systemAudioOff"] && fakes.flowBar.notifications.first?.actions == ["Turn on"],
+          "a card says only the mic is recorded: \(fakes.flowBar.notifications.map(\.id))")
+    fakes.audio.feed(MeetingFixture.frames(base: 100, to: 3))
+    meetingWaitUntil(5) { recorder.currentMeeting?.segments.isEmpty == false }
+    _ = complete(10) { await recorder.stop() }
+    _ = complete(30) { await recorder.waitForProcessing() }
+    check(fakes.store.rows[meeting.id]?.segments.first?.text == MeetingFixture.utterances[0].text, "and the mic is transcribed")
+}
+
+/// The disk fills mid-meeting: the recording stops by itself, keeps what it has, and says so; with too little space a
+/// recording doesn't start.
+@MainActor private func meetingDiskFull() {
+    let fakes = MeetingFakes()
+    defer { fakes.restore() }
+    let recorder = MeetingRecorder()
+    recorder.monitorInterval = 0.05
+    var free: Int64 = 10 << 30
+    recorder.freeSpace = { free }
+    guard case .success(let meeting)? = complete(10, { try await recorder.start(nil) }) else { check(false, "recording starts"); return }
+    fakes.audio.feed(MeetingFixture.frames(base: 100, to: 6))
+    meetingWaitUntil(5) { recorder.currentMeeting?.segments.count == 2 }
+    free = 10 << 20
+    check(meetingWaitUntil(5) { recorder.currentMeeting == nil }, "the recording stopped by itself")
+    _ = complete(30) { await recorder.waitForProcessing() }
+    let row = fakes.store.rows[meeting.id]
+    check(row?.endedAt != nil && (row?.segments.count ?? 0) >= 2 && row?.tracks.count == 2, "everything recorded so far is kept")
+    check(fakes.flowBar.notifications.last?.id == "meeting.storageFull" && fakes.audio.micHolders == 0, "a card says why; the mic is released")
+    if case .failure(let error)? = complete(10, { try await recorder.start(nil) }) {
+        check(error as? MeetingRecorderError == .storageFull, "no new recording without space")
+    } else { check(false, "start refused on a full disk") }
+    check(recorder.state == .idle && fakes.store.rows.count == 1, "nothing half-started")
+
+    // A write the disk refuses stops the recording the same way.
+    free = 10 << 30
+    let unwritable = MeetingRecorder()
+    guard case .success(let second)? = complete(10, { try await unwritable.start(nil) }) else { check(false, "second recording starts"); return }
+    try? FileManager.default.removeItem(at: SuperFlowPaths.meetingAudio.appendingPathComponent(second.id.uuidString))
+    fakes.audio.feed(MeetingFixture.frames(base: 200, to: 2))
+    check(meetingWaitUntil(5) { unwritable.currentMeeting == nil }, "a refused write stops the recording")
+    _ = complete(30) { await unwritable.waitForProcessing() }
+    check(fakes.store.rows[second.id]?.endedAt != nil, "the meeting is closed properly")
+}
+
+/// The microphone goes quiet mid-meeting (unplugged): it is restarted; if it stays quiet a card says so. Then the Mac
+/// goes to sleep: the recording stops properly instead of leaving a gap.
+@MainActor private func meetingMicLostAndSleep() {
+    let fakes = MeetingFakes()
+    defer { fakes.restore() }
+    let recorder = MeetingRecorder()
+    recorder.monitorInterval = 0.05
+    recorder.micSilenceLimit = 0.3
+    guard case .success(let meeting)? = complete(10, { try await recorder.start(nil) }) else { check(false, "recording starts"); return }
+    fakes.audio.feed(MeetingFixture.frames(base: 100, to: 1))
+    check(meetingWaitUntil(3) { fakes.audio.micStarts == 2 }, "a silent microphone is restarted (\(fakes.audio.micStarts) starts)")
+    check(fakes.audio.micHolders == 1, "still holding it once")
+    check(meetingWaitUntil(3) { fakes.flowBar.notifications.contains { $0.id == "meeting.micLost" } }, "still silent: a card says so")
+
+    NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.willSleepNotification, object: NSWorkspace.shared)
+    check(meetingWaitUntil(5) { recorder.currentMeeting == nil }, "sleep stops the recording")
+    _ = complete(30) { await recorder.waitForProcessing() }
+    check(fakes.store.rows[meeting.id]?.endedAt != nil && fakes.flowBar.notifications.last?.id == "meeting.stoppedForSleep" && fakes.audio.micHolders == 0,
+          "saved and explained")
+}
+
+/// The engine wasn't ready during the meeting and the notes model failed: the transcript and audio are kept, and
+/// "Retry transcript" / "Generate summary" fill them in later.
+@MainActor private func meetingRetries() {
+    let fakes = MeetingFakes()
+    defer { fakes.restore() }
+    let recorder = MeetingRecorder()
+    fakes.speech.transcribeError = SpeechError.modelNotInstalled("parakeet")
+    fakes.notes.isReady = false
+    guard case .success(let meeting)? = complete(10, { try await recorder.start(nil) }) else { check(false, "recording starts"); return }
+    fakes.audio.feed(MeetingFixture.frames(base: 100))
+    let folder = SuperFlowPaths.meetingAudio(meeting.id)
+    meetingWaitUntil(10) {
+        AudioChannel.allCases.allSatisfy { channel in
+            ChunkedTrackWriter.chunks(in: folder, channel: channel).reduce(0) { $0 + ChunkedTrackWriter.sampleCount(of: $1) }
+                >= Int(MeetingFixture.length) * AudioClip.sampleRate - 640
+        }
+    }
+    _ = complete(10) { await recorder.stop() }
+    _ = complete(30) { await recorder.waitForProcessing() }
+    var row = fakes.store.rows[meeting.id]
+    check(row?.segments.isEmpty == true && row?.summary == nil && row?.tracks.count == 2, "no transcript, no notes, but the audio is kept")
+
+    if case .failure(let error)? = complete(30, { try await recorder.retryTranscript(of: meeting.id) }) {
+        check(error as? SpeechError == .modelNotInstalled("parakeet"), "a retry that still can't transcribe says why")
+    } else { check(false, "retry without an engine must fail") }
+    fakes.speech.transcribeError = nil
+    if case .failure(let error)? = complete(30, { try await recorder.retryTranscript(of: meeting.id) }) { check(false, "retry failed: \(error)") }
+    row = fakes.store.rows[meeting.id]
+    check(row?.segments.map(\.text) == MeetingFixture.utterances.map(\.text), "the transcript comes back from the saved audio: \(row?.segments.map(\.text) ?? [])")
+    check(row?.speakers.count == 3, "speakers too")
+    check(row?.summary == nil && recorder.state == .idle, "still no notes without the model")
+
+    if case .failure(let error)? = complete(30, { try await recorder.regenerateNotes(of: meeting.id) }) {
+        check(error is MeetingNotesError, "Generate summary without a model says why: \(error)")
+    } else { check(false, "notes without a model must fail") }
+    fakes.notes.isReady = true
+    if case .failure(let error)? = complete(30, { try await recorder.regenerateNotes(of: meeting.id) }) { check(false, "regenerate failed: \(error)") }
+    check(fakes.store.rows[meeting.id]?.summary != nil && !fakes.store.items.isEmpty, "Generate summary writes the notes and the tasks")
+    if case .failure(let error)? = complete(10, { try await recorder.retryTranscript(of: UUID()) }) {
+        check(error is StoreError, "an unknown meeting is refused")
+    } else { check(false, "unknown meeting must fail") }
+}
+
+/// The child process of `meetingKilledMidRecording`: records 8 s of the fixture into a real store, prints the meeting id
+/// once its transcript is saved, and waits to be killed.
+@MainActor func meetingCrashChild() -> Never {
+    let store = SQLiteStore.open()
+    let fakes = MeetingFakes()
+    Services.meetings = store
+    let recorder = MeetingRecorder()
+    recorder.persistInterval = 0.05
+    guard case .success(let meeting)? = complete(10, { try await recorder.start(nil) }) else { exit(2) }
+    fakes.audio.feed(MeetingFixture.frames(base: 100, to: 8))
+    meetingWaitUntil(10) { (store.meeting(meeting.id)?.segments.count ?? 0) >= 2 }
+    print(CrashChild.ready + meeting.id.uuidString)
+    while true { RunLoop.main.run(until: Date().addingTimeInterval(1)) }
 }
 
 // MARK: - Speakers

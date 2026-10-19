@@ -68,6 +68,12 @@ public enum SuperFlowPaths {
     /// A damaged database is moved here before starting over.
     public static var backup: URL { ensure(support.appendingPathComponent("Backup", isDirectory: true)) }
 
+    /// Free bytes for important use on the volume that holds `url`; `Int64.max` when the system can't say, so a failed
+    /// query never stops a recording.
+    public static func freeSpace(at url: URL) -> Int64 {
+        (try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?.volumeAvailableCapacityForImportantUsage ?? .max
+    }
+
     @discardableResult public static func ensure(_ url: URL) -> URL {
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url

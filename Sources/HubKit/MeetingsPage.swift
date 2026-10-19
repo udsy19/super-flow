@@ -278,6 +278,47 @@ struct MeetingHeader: View {
     }
 }
 
+/// "Retry transcript" and "Generate summary" for a finished meeting whose transcription or notes failed.
+@MainActor
+public enum MeetingRetry {
+    /// "Generate summary" is offered: no summary, enough transcript and notes for one, and nothing running on the meeting.
+    public static func canSummarize(_ meeting: Meeting) -> Bool {
+        let words = MeetingExport.finalSegments(meeting.segments).reduce(0) { $0 + Dictation.countWords($1.text) } + Dictation.countWords(meeting.notes)
+        return meeting.summary == nil && words >= MeetingSummary.minimumWords && isIdle(meeting)
+    }
+
+    /// "Retry transcript" is offered: nothing was transcribed, the audio is still there, and nothing is running on it.
+    public static func canRetryTranscript(_ meeting: Meeting) -> Bool {
+        MeetingExport.finalSegments(meeting.segments).isEmpty && meeting.hasAudio && isIdle(meeting)
+    }
+
+    private static func isIdle(_ meeting: Meeting) -> Bool {
+        !MeetingRecordingState.isActive(meeting.id) && MeetingRecordingState.stage(of: meeting.id) == nil
+    }
+
+    static func transcript(of id: UUID, state: HubState) {
+        Task { @MainActor in
+            do {
+                try await Services.meetingRecorder?.retryTranscript(of: id)
+                state.showToast("Transcript ready")
+            } catch {
+                state.showToast(error.localizedDescription, isError: true)
+            }
+        }
+    }
+
+    static func notes(of id: UUID, state: HubState) {
+        Task { @MainActor in
+            do {
+                try await Services.meetingRecorder?.regenerateNotes(of: id)
+                state.showToast("Your summary is ready!")
+            } catch {
+                state.showToast(error.localizedDescription, isError: true)
+            }
+        }
+    }
+}
+
 /// Action items live as rows in the store (My Tasks); the summary's copy is the fallback before they're saved.
 enum MeetingActionItems {
     static func items(for meeting: Meeting, store: [ActionItem]) -> [ActionItem] {
@@ -301,6 +342,7 @@ enum MeetingActionItems {
 }
 
 struct MeetingSummaryView: View {
+    @EnvironmentObject private var state: HubState
     @EnvironmentObject private var store: HubStore
     let meeting: Meeting
 
@@ -338,6 +380,11 @@ struct MeetingSummaryView: View {
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(HubColor.backgroundTertiary))
+        } else if MeetingRetry.canSummarize(meeting) {
+            // The notes model failed or wasn't ready when the meeting ended; the transcript and notes are kept.
+            EmptyState(symbol: "text.alignleft", title: "No summary yet",
+                       message: "The summary couldn't be written when the meeting ended. Your transcript and notes are saved.",
+                       actionTitle: "Generate summary") { MeetingRetry.notes(of: meeting.id, state: state) }
         } else {
             EmptyState(symbol: "text.alignleft", title: "No summary",
                        message: meeting.segments.isEmpty ? "There's no transcript to summarize." : "The meeting was too short to summarize.")
@@ -406,7 +453,12 @@ struct MeetingTranscriptView: View {
 
     var body: some View {
         let groups = TranscriptGroup.make(meeting)
-        if groups.isEmpty {
+        if groups.isEmpty, MeetingRetry.canRetryTranscript(meeting) {
+            // The speech engine failed or wasn't ready: the audio is kept, so it can be transcribed again.
+            EmptyState(symbol: "text.quote", title: "No transcript",
+                       message: "Nothing was transcribed for this meeting. The audio is saved, so you can try again.",
+                       actionTitle: "Retry transcript") { MeetingRetry.transcript(of: meeting.id, state: state) }
+        } else if groups.isEmpty {
             EmptyState(symbol: "text.quote", title: "No transcript", message: "Nothing was transcribed for this meeting.")
         } else {
             VStack(alignment: .leading, spacing: 16) {

@@ -326,12 +326,15 @@ public final class SQLiteStore: HistoryStoring, MeetingStoring {
 
     public func deleteMeeting(_ id: UUID) throws {
         guard meeting(id) != nil else { throw StoreError.notFound(id) }
+        // The audio goes first: an interruption in between leaves a row without audio, never audio without a row (which
+        // the next launch would bring back as a recovered recording).
+        let folder = SuperFlowPaths.meetingAudio.appendingPathComponent(id.uuidString)
+        if FileManager.default.fileExists(atPath: folder.path) { try FileManager.default.removeItem(at: folder) }
         try db.transaction {
             try db.run("DELETE FROM meetings WHERE id = ?", [.text(id.uuidString)])
             try db.run("DELETE FROM meetings_fts WHERE id = ?", [.text(id.uuidString)])
             try db.run("DELETE FROM action_items WHERE meeting_id = ?", [.text(id.uuidString)])
         }
-        try? FileManager.default.removeItem(at: SuperFlowPaths.meetingAudio.appendingPathComponent(id.uuidString))
         changeSubject.send(.meetings)
     }
 

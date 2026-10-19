@@ -162,17 +162,23 @@ public final class ChunkedTrackWriter {
         var samples: [Float] = []
         var skip = fromSample
         for chunk in chunks(in: folder, channel: channel) {
-            guard let data = try? Data(contentsOf: chunk) else { continue }
-            let count = data.count / 2
+            let count = sampleCount(of: chunk)
             if skip >= count { skip -= count; continue }
-            data.withUnsafeBytes { raw in
-                let values = raw.bindMemory(to: Int16.self)
-                samples.reserveCapacity(samples.count + count - skip)
-                for i in skip..<count { samples.append(Float(Int16(littleEndian: values[i])) / 32767) }
-            }
+            samples += read(chunk, skipping: skip)
             skip = 0
         }
         return samples
+    }
+
+    /// One chunk's samples after the first `skip`.
+    static func read(_ chunk: URL, skipping skip: Int = 0) -> [Float] {
+        guard let data = try? Data(contentsOf: chunk) else { return [] }
+        let count = data.count / 2
+        guard skip < count else { return [] }
+        return data.withUnsafeBytes { raw in
+            let values = raw.bindMemory(to: Int16.self)
+            return (skip..<count).map { Float(Int16(littleEndian: values[$0])) / 32767 }
+        }
     }
 
     private static func pcm16(_ samples: ArraySlice<Float>) -> Data {
@@ -192,22 +198,50 @@ public enum MeetingAudioFiles {
     public static let bitRate = 32_000
 
     public static func fileName(_ channel: AudioChannel) -> String { channel.rawValue + ".m4a" }
+    /// The encoder writes here; the final name only ever holds a complete file.
+    static func encodingName(_ channel: AudioChannel) -> String { channel.rawValue + ".encoding.m4a" }
+    /// Present while the chunks are deleted after the final file went in: that file already holds all of them.
+    static func encodedMarker(_ channel: AudioChannel) -> String { channel.rawValue + ".encoded" }
 
     /// Encodes the channel's chunks into its final file and deletes the chunks; nil when the channel has no audio.
-    /// Encoding again replaces an earlier file, so an interrupted run can simply be repeated.
+    /// Every step survives being interrupted (a crash, a quit, a full disk) and simply runs again: the chunks are only
+    /// deleted once the complete new file has atomically replaced the old one, and a marker says so meanwhile.
     public static func finalize(folder: URL, channel: AudioChannel) throws -> AudioTrack? {
+        let fm = FileManager.default
         let chunks = ChunkedTrackWriter.chunks(in: folder, channel: channel)
-        guard !chunks.isEmpty else { return existingTrack(folder: folder, channel: channel) }
-        let samples = ChunkedTrackWriter.read(folder: folder, channel: channel)
         let url = folder.appendingPathComponent(fileName(channel))
-        if !samples.isEmpty {
-            try? FileManager.default.removeItem(at: url)
-            try encode(samples, to: url)
+        let marker = folder.appendingPathComponent(encodedMarker(channel))
+        let total = chunks.reduce(0) { $0 + ChunkedTrackWriter.sampleCount(of: $1) }
+        var encoded: Int?
+        if total > 0, !fm.fileExists(atPath: marker.path) {
+            let partial = folder.appendingPathComponent(encodingName(channel))
+            try? fm.removeItem(at: partial)
+            try encode(chunks, to: partial)
+            guard rename(partial.path, url.path) == 0 else { throw CocoaError(.fileWriteUnknown) }
+            guard fm.createFile(atPath: marker.path, contents: nil) else { throw CocoaError(.fileWriteUnknown) }
+            encoded = total
         }
-        for chunk in chunks { try? FileManager.default.removeItem(at: chunk) }
-        guard !samples.isEmpty else { return nil }
-        return AudioTrack(channel: channel, file: fileName(channel), duration: Double(samples.count) / Double(AudioClip.sampleRate),
+        for chunk in chunks { try? fm.removeItem(at: chunk) }
+        try? fm.removeItem(at: marker)
+        guard let encoded else { return existingTrack(folder: folder, channel: channel) }
+        return AudioTrack(channel: channel, file: fileName(channel), duration: Double(encoded) / Double(AudioClip.sampleRate),
                           byteSize: fileSize(url))
+    }
+
+    /// Whether the channel's audio is (or is about to be) only in its final file.
+    static func isEncoded(folder: URL, channel: AudioChannel) -> Bool {
+        FileManager.default.fileExists(atPath: folder.appendingPathComponent(encodedMarker(channel)).path)
+            || ChunkedTrackWriter.chunks(in: folder, channel: channel).isEmpty
+    }
+
+    /// The channel's samples from `fromSample` on, from its chunks while it is still recorded in chunks, else from its
+    /// final file (re-transcribing a finished meeting).
+    public static func samples(folder: URL, channel: AudioChannel, fromSample: Int = 0) -> [Float] {
+        if !isEncoded(folder: folder, channel: channel) {
+            return ChunkedTrackWriter.read(folder: folder, channel: channel, fromSample: fromSample)
+        }
+        guard let all = try? decode(folder.appendingPathComponent(fileName(channel))), fromSample < all.count else { return [] }
+        return fromSample > 0 ? Array(all[fromSample...]) : all
     }
 
     private static func existingTrack(folder: URL, channel: AudioChannel) -> AudioTrack? {
@@ -217,20 +251,19 @@ public enum MeetingAudioFiles {
                           byteSize: fileSize(url))
     }
 
-    public static func encode(_ samples: [Float], to url: URL) throws {
+    /// Encodes chunk by chunk, so a long meeting never sits in memory whole. The file is closed when this returns.
+    private static func encode(_ chunks: [URL], to url: URL) throws {
         let settings: [String: Any] = [AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: AudioClip.sampleRate,
                                        AVNumberOfChannelsKey: 1, AVEncoderBitRateKey: bitRate]
         let file = try AVAudioFile(forWriting: url, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
-        let block = 16 * AudioClip.sampleRate
-        var offset = 0
-        while offset < samples.count {
-            let count = min(block, samples.count - offset)
-            guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(count)),
+        for chunk in chunks {
+            let samples = ChunkedTrackWriter.read(chunk)
+            guard !samples.isEmpty else { continue }
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(samples.count)),
                   let channel = buffer.floatChannelData?[0] else { throw CocoaError(.fileWriteUnknown) }
-            buffer.frameLength = AVAudioFrameCount(count)
-            samples.withUnsafeBufferPointer { channel.update(from: $0.baseAddress! + offset, count: count) }
+            buffer.frameLength = AVAudioFrameCount(samples.count)
+            samples.withUnsafeBufferPointer { channel.update(from: $0.baseAddress!, count: samples.count) }
             try file.write(from: buffer)
-            offset += count
         }
     }
 

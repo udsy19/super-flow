@@ -565,6 +565,12 @@ public protocol MeetingRecording: AnyObject {
     func renameSpeaker(_ speakerID: UUID, to name: String, inMeeting id: UUID) throws
     /// Deletes audio past retention (`Defaults[.meetingAudioRetentionDays]`); returns the meetings pruned.
     @discardableResult func pruneAudio(now: Date) -> [UUID]
+    /// "Retry transcript": transcribes a finished meeting again from its saved audio (the engine failed or wasn't ready),
+    /// then speakers and notes. Throws when nothing could be transcribed.
+    func retryTranscript(of id: UUID) async throws
+    /// "Generate summary": writes the notes again from the saved transcript and the user's notes (after the notes model
+    /// failed or wasn't ready). Throws why it couldn't.
+    func regenerateNotes(of id: UUID) async throws
 }
 
 @MainActor
