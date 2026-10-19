@@ -104,16 +104,29 @@ Models download automatically after install, speech first, one at a time, only o
 Power Mode, never while you dictate, and never when less than 10 GB is free. "Download models automatically" in
 Settings › Models turns it off; each model can also be downloaded, paused, deleted or imported from a file there.
 
+Settings › Models also picks the **dictation engine** on Apple silicon:
+
+- **Parakeet (multilingual, default)**: the most accurate, 25 European languages.
+- **Nemotron (English, fastest, live text)**: shows your words while you speak and has the text ready about 20 ms
+  after you let go of the key (Parakeet: about 60 ms). English only: other languages and meetings keep using
+  Parakeet. Downloads 627 MB when you choose it.
+- **Apple on-device (macOS 26)**: nothing to download; macOS's own speech model, 10 languages, one at a time.
+
+Macs with 24 GB or more can also switch the **cleanup model** from Qwen3.5 2B to Qwen3.5 4B ("best quality": a few
+points more accurate, about twice as slow), which they already have for meeting notes.
+
 | Model | Used for | Size | Licence |
 |---|---|---|---|
 | Parakeet TDT 0.6B v3 (Core ML, Apple silicon) | Dictation in 25 European languages | 470 MB | CC-BY-4.0 |
+| Nemotron Speech Streaming EN 0.6B, 1120 ms (Core ML, Apple silicon) | Live English dictation, when chosen | 627 MB | NVIDIA Open Model License |
+| Apple SpeechTranscriber (macOS 26) | Dictation, when chosen | — (part of macOS) | Apple |
 | Whisper base (q5_1) | Bootstrap and Intel dictation, 99 languages | 60 MB | MIT |
 | Whisper large-v3-turbo (q5_0) | Multilingual fallback, on demand | 574 MB | MIT |
 | Whisper small (q5_1) | Intel Macs with 16 GB+ | 190 MB | MIT |
 | Silero VAD v6.2 | Voice activity detection — bundled, nothing to download | 0.9 MB | MIT |
-| Qwen3.5-2B (Q4_K_M) | Cleanup, Transforms, Command Mode | 1.28 GB | Apache-2.0 |
+| Qwen3.5-2B (Q4_K_M) | Cleanup (the default), Transforms, Command Mode | 1.28 GB | Apache-2.0 |
 | Qwen3.5-0.8B (Q4_K_M) | Cleanup on 8 GB Macs and Intel | 533 MB | Apache-2.0 |
-| Qwen3.5-4B (Q4_K_M) | Meeting notes | 2.74 GB | Apache-2.0 |
+| Qwen3.5-4B (Q4_K_M) | Meeting notes; cleanup when chosen on 24 GB Macs | 2.74 GB | Apache-2.0 |
 | Speaker diarization (Community-1, Core ML) | Who said what in meetings | 22 MB | CC-BY-4.0 |
 | LocalVQE 1.3 (Core ML) | Echo removal in meetings | 20 MB | Apache-2.0 |
 
@@ -129,6 +142,7 @@ Command Line Tools only; no Xcode project.
 git clone https://github.com/udsy19/super-flow.git && cd super-flow
 swift build                       # every module, warning-free
 swift run SuperFlowSelfTest       # headless checks; real-model cases run with SUPERFLOW_DEV_MODELS=<folder>:<folder>
+                                  # (the cleanup evaluation set scores itself; SUPERFLOW_EVAL_VERBOSE=1 lists failures)
 ./scripts/signing-setup.sh        # once: a project-local signing identity, so privacy grants survive rebuilds
 ./scripts/build-app.sh            # build/Super Flow.app (UNIVERSAL=1 for Apple silicon + Intel)
 ```
@@ -143,5 +157,8 @@ launches the app. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) explains the modu
 Super Flow is MIT-licensed (see [LICENSE](LICENSE)). It stands on
 [FluidAudio](https://github.com/FluidInference/FluidAudio) (Apache-2.0: Parakeet, VAD, diarization and LocalVQE on
 Core ML), [whisper.cpp](https://github.com/ggml-org/whisper.cpp) and [llama.cpp](https://github.com/ggml-org/llama.cpp)
-(MIT), the NVIDIA Parakeet, OpenAI Whisper, Silero, Qwen, pyannote and WeSpeaker models, and the SQLite that ships
-with macOS. Every component and model licence is listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+(MIT), the NVIDIA Parakeet and Nemotron, OpenAI Whisper, Silero, Qwen, pyannote and WeSpeaker models, and the SQLite
+that ships with macOS. Every component and model licence is listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Nemotron Speech Streaming EN 0.6B is licensed by NVIDIA Corporation under the NVIDIA Open Model License; the agreement
+ships in the app at `Contents/Resources/Licenses/NVIDIA-Open-Model-License.txt` and in this repository under
+[Resources/Licenses](Resources/Licenses/NVIDIA-Open-Model-License.txt).

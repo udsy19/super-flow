@@ -1,6 +1,11 @@
 # A second speech-to-text engine (besides Parakeet and Whisper)
 
-Status: research, 19 Oct 2026. Nothing in `Sources/` was changed; this spec is the integration plan.
+Status: research, 19 Oct 2026; integrated the same day (`NemotronEngine`, `AppleSpeechEngine`, `SpeechService`,
+`ModelCatalog.nemotronStreamingEN` / `.appleSpeech`, Settings › Models "Dictation engine"). Deviations from the plan:
+the settings use the owner's labels "Parakeet (multilingual, default)" / "Nemotron (English, fastest, live text)";
+the lead-in silence is fed before every stream (not only when the pre-roll is short); Apple's engine counts as an
+engine only once chosen (it may make the OS download assets) and supports 30 locales of 10 languages. Measured in
+the self-test on the M4 Pro with 300 ms lead-in clips: tail 21–24 ms, 0 word errors, a partial per 1.12 s chunk.
 
 Related: `local-models.md` §2 (speech options) and §6 (licences), `oss-survey.md` §2 and §7.
 

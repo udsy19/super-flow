@@ -22,9 +22,10 @@ Sources/
   AudioKit/           microphone capture (AVAudioEngine, 16 kHz mono, pre/post-roll), device ranking,
                       level meter, system-audio capture (Core Audio process tap, SCK fallback), mute,
                       cue sounds
-  SpeechKit/          ASR engines behind SpeechRecognizing (Parakeet via FluidAudio, whisper.cpp; Apple
-                      SpeechTranscriber optional), VAD, diarization, priority queue; ModelManaging:
-                      catalog, automatic background downloads, resume, SHA-256, import, delete, disk usage
+  SpeechKit/          ASR engines behind SpeechRecognizing (Parakeet via FluidAudio, whisper.cpp; Nemotron
+                      streaming via FluidAudio for live English; Apple SpeechTranscriber on macOS 26), VAD,
+                      diarization, priority queue; ModelManaging: catalog, automatic background downloads,
+                      resume, SHA-256, import, delete, disk usage
   CleanupKit/         deterministic text pipeline (commands, snippets, replacements, fillers, self-
                       corrections, lists, casing, cursor-aware joining, guardrails) around the llama.cpp
                       LLM (prefix cache, per-app style), Transforms, Command Mode
@@ -60,7 +61,8 @@ Sources/
   module as key prefix: `Key<Double>("updateKit.lastAttempt", …)`.
 - UI code and the service protocols are `@MainActor`. Engines (audio, inference, SQLite) do their work off the main
   actor (actors, queues) and hand back values; they never touch `Services` from a background thread.
-- Everything is local. The only network use is model downloads and update checks (`PRIVACY.md`). No telemetry.
+- Everything is local. The only network use is model downloads and update checks (`PRIVACY.md`), plus the language
+  assets macOS fetches for its own speech model when the user chooses Apple's engine. No telemetry.
 - No dead code: superseded code, placeholders and their now-unused helpers go in the same change.
 - Never mention the reference product in user-facing strings; copy comes from `docs/specs/strings.md` rewritten
   for Super Flow.
@@ -108,6 +110,8 @@ hotkeys (InsertionKit) ─► HotkeyRouter (pure: event + state → intent) ─�
              audio.frames (subscribed first, so the 300 ms pre-roll arrives) · audio.startMicrophone() · muteOutput
              cue dictationStart · status listening · flowBar.listening(mode) · cleanup.warm(style, level, category)
    while held: 40 ms frames → speech.transcribeIncrementally(…, .dictation): partials → flowBar.showLiveText (hands-free)
+             (Parakeet/Whisper/Apple: VAD segments, the open one decoded each second; Nemotron: every frame streamed into
+             the model, partials per 1.12 s chunk, key-up decodes only the last chunk)
              no frame for 3 s → dismiss(noAudioDuringDictation); 19/20 min warning and stop
    key-up:   150 ms post-roll · stop mic · cue dictationStop · status processing · final transcript
              cleanup.clean(input, budget: 1.0 s short / 2.5 s long; per-app style, style detection, dictionary, snippets)
@@ -129,7 +133,9 @@ push-to-talk press (finishes) followed by a hands-free press that lands on a bus
 500 ms); Fn then Control turns the session into Command Mode; a key that completes no chord inside the first second
 dismisses with `other_shortcut`.
 
-Meetings run the same engines through `MeetingKit` with `SpeechPriority.meeting`; dictation pre-empts. The notes
+Meetings run the same engines through `MeetingKit` with `SpeechPriority.meeting`; dictation pre-empts. A chosen
+Nemotron or Apple engine serves dictation only (Nemotron: English only); meetings and other languages load Parakeet or
+Whisper beside it. "Retry transcript" on a meeting streams its audio from disk 30 s at a time. The notes
 model is a second `LanguageModelRole` on `TextCleaning` (`generate(_:instruction:role:)`), loaded by `MeetingRecorder`
 when a meeting starts and shared with cleanup when both settings name the same GGUF.
 
@@ -157,8 +163,8 @@ download hosts.
 
 ## Scripts
 
-`scripts/signing-setup.sh` (once), `scripts/build-app.sh` (`--debug`, `UNIVERSAL=1`; copies the frameworks, sounds
-and bundled models, signs, then runs static launch checks: the library-validation entitlement, rpaths, every `@rpath`
+`scripts/signing-setup.sh` (once), `scripts/build-app.sh` (`--debug`, `UNIVERSAL=1`; copies the frameworks, sounds,
+bundled models and licence texts (`Resources/Licenses`), signs, then runs static launch checks: the library-validation entitlement, rpaths, every `@rpath`
 dependency present in `Contents/Frameworks`, resources and usage descriptions — the app is never launched by the
 build), `scripts/make-dmg.sh`, `scripts/release.sh <version>`, `scripts/install.sh` (served at
 https://udsy19.github.io/super-flow/install.sh; `SUPERFLOW_INSTALL_DIR`, `SUPERFLOW_NO_OPEN`), `scripts/make-icon.swift`,

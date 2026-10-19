@@ -46,6 +46,10 @@ History, Notes and Meetings pages delete single items.
 Nothing is sent in either case except the ordinary HTTP request for the file. Turn both off and the app makes no
 connection at all.
 
+On macOS 26, choosing "Apple on-device" as the dictation engine lets macOS download its own speech model for your
+language the first time, through Apple's asset system; Super Flow sends nothing itself, and the audio never leaves the
+Mac.
+
 ## Permissions
 
 | Permission | Used for |

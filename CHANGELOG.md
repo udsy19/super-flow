@@ -28,6 +28,13 @@ All notable changes to Super Flow are recorded here. The format follows Keep a C
 - Background updates from GitHub Releases, verified by SHA-256 and code signature.
 - Our own cue sounds (`scripts/make-sounds.swift`), `superflow://` URLs, a one-line installer and a DMG.
 - A headless self-test suite, including an end-to-end run of the real engines on synthetic speech.
+- A second dictation engine: NVIDIA Nemotron Speech Streaming EN 0.6B through FluidAudio, chosen in Settings › Models
+  as "Nemotron (English, fastest, live text)". It recognises while the key is held, shows live text, and has the final
+  text about 20 ms after key-up; English only, so other languages and meetings stay on Parakeet. The NVIDIA Open Model
+  License ships with the app. On macOS 26, Apple's on-device SpeechAnalyzer is a zero-download choice for one language.
+- A "Cleanup model" choice on Macs with 24 GB or more: Qwen3.5 2B (the default) or Qwen3.5 4B (best quality).
+- The cleanup evaluation set (`docs/specs/cleanup-eval.jsonl`, 222 dictations) runs in the self-test: the rules alone
+  must keep 207 passes, and with the dev model the rules and Qwen3.5-2B must pass 90% (they pass 93.7%).
 
 ### Fixed
 - The store never crashes the launch or sets data aside without need: a damaged database, or one whose schema can't be
@@ -72,3 +79,17 @@ All notable changes to Super Flow are recorded here. The format follows Keep a C
 - A second running copy of Super Flow (a development build beside the installed app) never finishes, moves or deletes
   a dictation or meeting the other copy is still recording: recordings hold a lock that launch recovery respects, and
   the kernel releases it the moment a process dies.
+- Cleanup corrections that hold: self-corrections resolve at every cleanup level, also across the commas speech
+  engines write ("No, wait,"), with "make that", "I meant" and "no, sorry"; a mid-sentence "scratch that" takes back
+  only the clause before it instead of the whole sentence. Spoken flags, slashes and file names become symbols in
+  terminals and AI apps ("dash dash save dash dev" → `--save-dev`, "config dot yaml" → `config.yaml`); French,
+  German, Spanish, Italian, Portuguese and Dutch fillers go; digits read one by one become one number ("123 Main
+  Street", "555-123-4567", "$100", "$1.2 million", "2.4.1", "404") instead of "one 23"; dictionary words heard as
+  sound-alikes ("Shivon", "cube control", "postgres QL") are spelled as in the dictionary; Medium cleanup lists short
+  to-dos as bullets. The model's prompt is rewritten with new examples and no longer sees the text before the cursor,
+  which it used to copy into its answer; a light edit that drops the speaker's words or a meant repeat ("had had")
+  falls back to the rules text. Rules alone: 171 → 207 of 222 evaluation cases; with Qwen3.5-2B: 175 → 208.
+- Dictation audio is deleted after 14 days, as PRIVACY.md says; the text stays, and audio that is the only record of
+  an untranscribed dictation stays for "Retry transcript".
+- "Retry transcript" on a long meeting streams the recording from disk 30 s at a time instead of loading every
+  track whole.
