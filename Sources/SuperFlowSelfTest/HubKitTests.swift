@@ -48,6 +48,13 @@ func registerHubKitTests() {
         let stamps = [now, now.addingTimeInterval(-120), now.addingTimeInterval(-86_400), now.addingTimeInterval(-86_500)]
         let groups = HubFormat.groupByDay(stamps.reversed(), date: { $0 }, now: now, calendar: calendar)
         check(groups.map(\.title) == ["Today", "Yesterday"] && groups.map(\.items.count) == [2, 2], "grouped by day, newest day first")
+        check(HubFormat.engineChoice(ModelCatalog.parakeetV3) == "Parakeet (multilingual, default)"
+              && HubFormat.engineChoice(ModelCatalog.nemotronStreamingEN) == "Nemotron (English, fastest, live text)",
+              "dictation engine choices")
+        check(HubFormat.engineDetail(ModelCatalog.nemotronStreamingEN.id, englishOnlyUser: false).contains("Other languages use Parakeet")
+              && !HubFormat.engineDetail(ModelCatalog.nemotronStreamingEN.id, englishOnlyUser: true).contains("Other languages"),
+              "Nemotron says what happens to other languages only when there are some")
+        check(HubFormat.cleanupChoice(ModelCatalog.qwen35_4B) == "Qwen3.5 4B (best quality)", "cleanup model choices")
         check(HubFormat.duration(35) == "35 s" && HubFormat.duration(42 * 60) == "42 min" && HubFormat.duration(3900) == "1 h 5 min"
               && HubFormat.duration(7200) == "2 h", "durations")
         check(HubFormat.clock(187) == "03:07" && HubFormat.clock(3765) == "1:02:45", "clock")

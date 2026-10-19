@@ -493,12 +493,19 @@ struct FlowLayout: Layout {
 struct ModelsPane: View {
     @EnvironmentObject private var store: HubStore
     @Default(.autoDownloadModels) private var auto
+    @Default(.asrModelID) private var speechModel
+    @Default(.cleanupModelID) private var cleanupModel
+    @Default(.selectedLanguages) private var languages
+    @Default(.autoDetectLanguage) private var autoDetect
 
     var body: some View {
         let _ = store.modelRevision
         let preset = ModelCatalog.preset(isAppleSilicon: Machine.isAppleSilicon, memoryBytes: Machine.memoryBytes)
         let mine = ModelSummary.queue.filter { $0.kind != .vad }
-        let others = ModelCatalog.all.filter { m in m.kind != .vad && !mine.contains { $0.id == m.id } }
+        let others = ModelCatalog.all.filter { m in m.kind != .vad && !m.isBuiltIn && !mine.contains { $0.id == m.id } }
+        let engines = ModelCatalog.dictationEngines(isAppleSilicon: Machine.isAppleSilicon,
+                                                    hasAppleSpeech: Services.models?.state(of: ModelCatalog.appleSpeech.id) == .installed)
+        let cleanupModels = ModelCatalog.cleanupModels(isAppleSilicon: Machine.isAppleSilicon, memoryBytes: Machine.memoryBytes)
         SettingsPage(title: "Models", description: "Speech, cleanup and meeting notes run on these models, on this Mac. They download on their own.") {
             RowsCard {
                 SwitchRow(title: "Download models automatically",
@@ -507,6 +514,23 @@ struct ModelsPane: View {
                               auto = on
                               Services.models?.startAutomaticDownloads()
                           }))
+                if !engines.isEmpty {
+                    Rule()
+                    SettingsRow(title: "Dictation engine", detail: HubFormat.engineDetail(speechModel, englishOnlyUser: englishOnly), controlWidth: 290) {
+                        MenuPicker(options: engines.map { ($0.id, HubFormat.engineChoice($0)) },
+                                   selection: Binding(get: { engines.contains { $0.id == speechModel } ? speechModel : ModelCatalog.parakeetV3.id },
+                                                      set: { speechModel = $0 }), width: 290)
+                    }
+                }
+                if !cleanupModels.isEmpty {
+                    Rule()
+                    SettingsRow(title: "Cleanup model",
+                                detail: "Fixes punctuation, fillers and self-corrections. The 4B model is more accurate and takes about twice as long.",
+                                controlWidth: 290) {
+                        MenuPicker(options: cleanupModels.map { ($0.id, HubFormat.cleanupChoice($0)) },
+                                   selection: Binding(get: { cleanupModel ?? ModelCatalog.qwen35_2B.id }, set: { cleanupModel = $0 }), width: 290)
+                    }
+                }
             }
             SettingsSection(title: "For this Mac · \(preset.name)") {
                 RowsCard {
@@ -533,6 +557,13 @@ struct ModelsPane: View {
                     .buttonStyle(HubButtonStyle(variant: .ghost, size: .xs))
             }
         }
+    }
+}
+
+extension ModelsPane {
+    /// Whether every dictation language is English (Nemotron covers only English).
+    private var englishOnly: Bool {
+        !autoDetect && !languages.isEmpty && languages.allSatisfy { SupportedLanguages.base($0) == "en" }
     }
 }
 
@@ -791,7 +822,7 @@ struct AboutPane: View {
             }
             SettingsSection(title: "Open models") {
                 HubCard(spacing: 12) {
-                    ForEach(ModelCatalog.all.filter { !$0.attribution.isEmpty }) { model in
+                    ForEach(ModelCatalog.all.filter { !$0.attribution.isEmpty && !$0.isBuiltIn }) { model in
                         VStack(alignment: .leading, spacing: 2) {
                             Text(model.name).hubText(.sm, .emphasis)
                             Text(model.attribution).hubText(.xs, .regular, HubColor.tertiary).fixedSize(horizontal: false, vertical: true)

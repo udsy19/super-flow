@@ -121,6 +121,34 @@ public enum HubFormat {
         }
     }
 
+    /// The dictation engine choices in Settings › Models.
+    public static func engineChoice(_ model: ModelDescriptor) -> String {
+        switch model.id {
+        case ModelCatalog.parakeetV3.id: "Parakeet (multilingual, default)"
+        case ModelCatalog.nemotronStreamingEN.id: "Nemotron (English, fastest, live text)"
+        default: model.name
+        }
+    }
+
+    /// What the chosen dictation engine does, in plain words; `englishOnlyUser` is false when a dictation language other
+    /// than English is selected (or detected), which Nemotron leaves to Parakeet.
+    public static func engineDetail(_ id: String, englishOnlyUser: Bool) -> String {
+        switch id {
+        case ModelCatalog.nemotronStreamingEN.id:
+            "Shows your words as you speak and finishes fastest. English only; a 627 MB download."
+                + (englishOnlyUser ? "" : " Nemotron only understands English. Other languages use Parakeet.")
+        case ModelCatalog.appleSpeech.id:
+            "No download. Uses the speech model built into macOS. 10 languages, one at a time."
+        default:
+            "Most accurate. Understands 25 European languages."
+        }
+    }
+
+    /// The cleanup model choices in Settings › Models (24 GB Macs and up).
+    public static func cleanupChoice(_ model: ModelDescriptor) -> String {
+        model.id == ModelCatalog.qwen35_4B.id ? "Qwen3.5 4B (best quality)" : "Qwen3.5 2B (default)"
+    }
+
     // MARK: Languages
 
     public static func languageName(_ code: String) -> String { SupportedLanguages.name(code) }
