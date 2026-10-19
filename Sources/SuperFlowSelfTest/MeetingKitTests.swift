@@ -382,7 +382,7 @@ private func meetingTemporaryFolder() -> URL {
         check(track.file == "mic.m4a" && abs(track.duration - 71) < 0.01 && track.byteSize > 0 && track.byteSize < 71 * 16_000,
               "final AAC track: \(track.duration) s, \(track.byteSize) bytes")
         check(ChunkedTrackWriter.chunks(in: folder, channel: .mic).isEmpty, "chunks deleted after encoding")
-        let decoded = (try? MeetingAudioFiles.decode(url)) ?? []
+        let decoded = (try? AudioClip.samples(of: url)) ?? []
         check(abs(decoded.count - 71 * 16_000) <= 2048, "AAC decodes to 71 s at 16 kHz (\(decoded.count) samples)")
         check((try? MeetingAudioFiles.finalize(folder: folder, channel: .mic))??.file == "mic.m4a", "finalizing again keeps the track")
     default: check(false, "finalize produced a track")

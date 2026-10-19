@@ -112,6 +112,10 @@ hotkeys (InsertionKit) ─► HotkeyRouter (pure: event + state → intent) ─�
    key-up:   150 ms post-roll · stop mic · cue dictationStop · status processing · final transcript
              cleanup.clean(input, budget: 1.0 s short / 2.5 s long; per-app style, style detection, dictionary, snippets)
              insertion.insert(text, actions) · history.save (+ audio .caf, snippet use counts)
+   audio:    every frame is appended to Audio/Dictations/<id>.pcm (+ <id>.json) as it arrives, so a crash keeps it; a
+             finished dictation turns it into <id>.caf or deletes it; leftovers become History rows at the next launch
+   failures: an engine error or a cancel after speaking keeps the audio as a row for "Retry transcript"; a paste that
+             lands nowhere gives the user's clipboard back and offers Copy; a save that fails keeps the text for paste-last
              flowBar.cleanupCompleted (2 s) · insertion.observeEdits(30 s) → AutoLearn → dictionary + card
    Command Mode (Fn+Control, or Fn then Control): selectedText at start · instruction → cleanup.transform → replaceSelection
    Transforms (⌥1–⌥3): selectedText → cleanup.transform(prompt) → replaceSelection or clipboard
@@ -145,7 +149,8 @@ Both xcframeworks are universal dynamic frameworks with `@rpath` install names a
 ## Data
 
 `~/Library/Application Support/Super Flow/`: `store.sqlite` (dictations, dictionary, snippets, transforms, notes,
-meetings, action items), `Models/<kind>/…`, `Audio/Dictations/<id>.caf`, `Audio/Meetings/<id>/`, `Backup/` (a damaged
+meetings, action items), `Models/<kind>/…`, `Audio/Dictations/<id>.caf` (`<id>.pcm` + `<id>.json` while recording), `Audio/Meetings/<id>/` (raw 30 s chunks while
+recording, `<channel>.m4a` after), `Backup/` (a damaged
 store, and the `notes.json` of pre-1.0 builds once imported). The Silero VAD ships inside the app
 (`Contents/Resources/Models/vad/`). Preferences in `com.udsy.superflow`. See `PRIVACY.md` for retention and the
 download hosts.

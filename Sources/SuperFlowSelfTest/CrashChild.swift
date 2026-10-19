@@ -12,6 +12,7 @@ enum CrashChild {
     @MainActor static func run(_ scenario: String) -> Never {
         switch scenario {
         case "meeting": meetingCrashChild()
+        case "dictation": dictationCrashChild()
         default:
             print("unknown crash scenario \(scenario)")
             exit(2)

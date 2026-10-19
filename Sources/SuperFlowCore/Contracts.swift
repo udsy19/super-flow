@@ -338,8 +338,9 @@ public enum InsertionMethod: String, Codable, CaseIterable, Sendable {
 
 public enum InsertionOutcome: Equatable, Sendable {
     case inserted
-    /// Nothing editable had focus or the paste was not picked up: the text stays on the clipboard.
-    case leftOnClipboard(reason: String)
+    /// Nothing editable had focus or the paste was not picked up. The user's clipboard is as it was (the caller keeps
+    /// the words reachable); only without Accessibility (`accessibility_not_trusted`) is the text left on the clipboard.
+    case notInserted(reason: String)
     case blockedSecureField
 }
 
@@ -680,6 +681,22 @@ public protocol DictationControlling: AnyObject {
     func dismiss(_ reason: DismissReason)
     func pasteLastTranscript()
     func copyLastTranscript()
+    /// "Retry transcript" in History: recognises and cleans a dictation's saved audio again (one that failed, was
+    /// cancelled or interrupted by a crash) and updates its row. Throws `DictationRetryError` or the engine's error.
+    func retryTranscription(_ id: UUID) async throws
+}
+
+/// Why "Retry transcript" couldn't run (strings.md `hub_history_*retry*`).
+public enum DictationRetryError: LocalizedError, Equatable {
+    case busy
+    case audioUnavailable
+
+    public var errorDescription: String? {
+        switch self {
+        case .busy: "Cannot retry while dictating."
+        case .audioUnavailable: "Cannot retry transcription as audio is no longer available (older than \(DictationLimits.dictationAudioRetentionDays) days)."
+        }
+    }
 }
 
 // MARK: - Updates (UpdateKit; behaviour.md §1.5)

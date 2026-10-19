@@ -46,3 +46,14 @@ All notable changes to Super Flow are recorded here. The format follows Keep a C
 - Utterances the speech engine failed on during a meeting are transcribed again from disk afterwards; a meeting page
   with no transcript offers "Retry transcript" from the saved audio, and one without a summary offers "Generate
   summary" instead of saying the meeting was too short.
+- Dictated words are never lost. Audio goes to disk from the first frame (`Audio/Dictations/<id>.pcm`), so a crash,
+  force quit or power loss leaves a History row at the next launch ("Recovered an interrupted dictation") instead of
+  nothing; a self-test kills a dictating child process with SIGKILL and gets the words back. An engine failure, or a
+  cancel after speaking, keeps the audio as a History row, and every row with audio offers "Retry transcript". The
+  long-dictation sample buffer no longer sits in memory.
+- A paste that lands nowhere gives the user's own clipboard back instead of replacing it; the card says "Click a
+  textbox and use ⌃⌘V to paste" and its Copy button puts the words on the clipboard. A dictation History can't save
+  (a full disk) still pastes with ⌃⌘V and says why; so does one made with History turned off.
+- A microphone unplugged mid-dictation finishes the dictation with what was heard instead of listening to nothing; a
+  cleanup model that is installed but won't load says so once while dictation carries on with the rules.
+- Audio files are read to the end: a single read stopped at the last whole 1024-frame packet and dropped the tail.

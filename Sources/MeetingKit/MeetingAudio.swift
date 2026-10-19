@@ -240,7 +240,7 @@ public enum MeetingAudioFiles {
         if !isEncoded(folder: folder, channel: channel) {
             return ChunkedTrackWriter.read(folder: folder, channel: channel, fromSample: fromSample)
         }
-        guard let all = try? decode(folder.appendingPathComponent(fileName(channel))), fromSample < all.count else { return [] }
+        guard let all = try? AudioClip.samples(of: folder.appendingPathComponent(fileName(channel))), fromSample < all.count else { return [] }
         return fromSample > 0 ? Array(all[fromSample...]) : all
     }
 
@@ -265,18 +265,6 @@ public enum MeetingAudioFiles {
             samples.withUnsafeBufferPointer { channel.update(from: $0.baseAddress!, count: samples.count) }
             try file.write(from: buffer)
         }
-    }
-
-    /// Decodes a final file back to 16 kHz mono samples (re-processing after the chunks are gone).
-    public static func decode(_ url: URL) throws -> [Float] {
-        let file = try AVAudioFile(forReading: url, commonFormat: .pcmFormatFloat32, interleaved: false)
-        guard file.processingFormat.sampleRate == Double(AudioClip.sampleRate), file.processingFormat.channelCount == 1,
-              let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length)) else {
-            throw CocoaError(.fileReadCorruptFile)
-        }
-        try file.read(into: buffer)
-        guard let channel = buffer.floatChannelData?[0] else { return [] }
-        return Array(UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength)))
     }
 
     private static func fileSize(_ url: URL) -> Int { (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0 }

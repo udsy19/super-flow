@@ -8,6 +8,7 @@ import SpeechKit
 import CleanupKit
 import MeetingKit
 import DictationKit
+import HubKit
 
 // Owned with DictationKit: the hotkey router and auto-learn as pure logic, then the real pipeline end to end with no
 // microphone, keyboard or screen: synthetic speech (`say -o`, never played) through a fake capture → the real speech
@@ -18,6 +19,9 @@ func registerEndToEndTests() {
     SelfTest.cases.append(("E2E.hotkeyRouter", { endToEndRouter() }))
     SelfTest.cases.append(("E2E.autoLearn", { endToEndAutoLearn() }))
     SelfTest.cases.append(("E2E.coordinatorWithFakes", { MainActor.assumeIsolated { endToEndCoordinatorFakes() } }))
+    SelfTest.cases.append(("E2E.wordsSurviveFailures", { MainActor.assumeIsolated { endToEndWordsSurviveFailures() } }))
+    SelfTest.cases.append(("E2E.killedMidDictation", { MainActor.assumeIsolated { endToEndKilledMidDictation() } }))
+    SelfTest.cases.append(("E2E.historyUnavailable", { MainActor.assumeIsolated { endToEndHistoryUnavailable() } }))
     SelfTest.cases.append(("E2E.dictationPipeline", { MainActor.assumeIsolated { endToEndDictation() } }))
     SelfTest.cases.append(("E2E.meetingPipeline", { MainActor.assumeIsolated { endToEndMeeting() } }))
 }
@@ -160,9 +164,12 @@ private func endToEndAutoLearn() {
     var replaced: [String] = []
     var editedVersion: String?
     var secure = false
+    /// Set to make every insertion fail the way a paste into nothing does.
+    var refuse: String?
 
     func insert(_ text: String, actions: [PostInsertAction], method: InsertionMethod) async -> InsertionOutcome {
         if secure { return .blockedSecureField }
+        if let refuse { return .notInserted(reason: refuse) }
         inserted.append(text)
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
@@ -197,10 +204,16 @@ private func endToEndAutoLearn() {
     func setLevel(_ level: Float) {}
     func setEdge(_ edge: FlowBarEdge) {}
     func setRestingVisible(_ visible: Bool) {}
-    func show(_ notification: FlowBarNotification, onAction: @escaping (String) -> Void) { notifications.append(notification) }
+    var actions: [String: (String) -> Void] = [:]
+    func show(_ notification: FlowBarNotification, onAction: @escaping (String) -> Void) {
+        notifications.append(notification)
+        actions[notification.id] = onAction
+    }
     func dismiss(notificationID: String) {}
     func showMeetingPrompt(_ prompt: MeetingPrompt, onAnswer: @escaping (MeetingPromptAnswer) -> Void) {}
     func showLiveText(_ text: String?) { if let text { liveTexts.append(text) } }
+    /// Clicks a card's button.
+    func click(_ id: String, _ action: String) { actions[id]?(action) }
 }
 
 @MainActor private final class E2EHub: HubPresenting {
@@ -215,17 +228,26 @@ private func endToEndAutoLearn() {
 /// A scripted speech engine for the fakes-only coordinator test: every clip stream yields one fixed transcript.
 @MainActor private final class E2EScriptedSpeech: SpeechRecognizing {
     var text = "hello world"
+    /// Set to make recognition fail (the engine crashed or isn't loaded).
+    var error: Error?
+    /// Samples the last one-shot transcription was given ("Retry transcript").
+    var lastClipSamples = 0
     var availableEngines: [String] { ["scripted"] }
     var activeEngineID: String? { "scripted" }
     func prepare(modelID: String) async throws {}
     func unload() {}
-    func transcribe(_ audio: AudioClip, options: TranscriptionOptions, priority: SpeechPriority) async throws -> Transcript { Transcript(text: text) }
+    func transcribe(_ audio: AudioClip, options: TranscriptionOptions, priority: SpeechPriority) async throws -> Transcript {
+        if let error { throw error }
+        lastClipSamples = audio.samples.count
+        return Transcript(text: text)
+    }
     func transcribeIncrementally(_ audio: AsyncStream<AudioClip>, options: TranscriptionOptions, priority: SpeechPriority)
         -> AsyncThrowingStream<TranscriptionEvent, Error> {
         AsyncThrowingStream { continuation in
             Task {
                 var heard = 0
                 for await clip in audio { heard += clip.samples.filter { $0 != 0 }.count }
+                if let error = self.error { continuation.finish(throwing: error); return }
                 guard heard > 0 else { continuation.finish(throwing: SpeechError.noSpeech); return }
                 continuation.yield(.partial(self.text))
                 continuation.yield(.final(Transcript(text: self.text, segments: [TranscriptSegment(start: 0, end: 1, text: self.text)])))
@@ -240,7 +262,8 @@ private func endToEndAutoLearn() {
 @MainActor private final class E2EModels: ModelManaging {
     var catalog: [ModelDescriptor] { ModelCatalog.all }
     func state(of id: String) -> ModelState { .installed }
-    func location(of id: String) -> URL? { nil }
+    var locations: [String: URL] = [:]
+    func location(of id: String) -> URL? { locations[id] }
     func download(_ id: String) -> AsyncThrowingStream<DownloadProgress, Error> { AsyncThrowingStream { $0.finish() } }
     func pause(_ id: String) {}
     func delete(_ id: String) throws {}
@@ -409,6 +432,225 @@ private func e2eWords(_ text: String) -> String { text.lowercased().components(s
     check(e2eWait { services.inserter.inserted.count == 3 }, "paste last transcript")
     check(services.inserter.inserted.last == "HELLO WORLD", "pastes the last row's text")
     check(services.hub.pages.isEmpty, "nothing opened the hub")
+}
+
+// MARK: - Words survive failures (always runs)
+
+/// Every way a dictation can fail after the user spoke keeps their words: the engine failing (audio kept, Retry
+/// transcript), a cancel after speaking, a paste that lands nowhere (clipboard untouched, one click copies), a
+/// microphone unplugged mid-sentence, and a cleanup model that won't load.
+@MainActor private func endToEndWordsSurviveFailures() {
+    let speech = E2EScriptedSpeech()
+    let services = E2EServices(speech: speech, models: E2EModels(), cleanup: TextCleaner())
+    defer { services.restore() }
+    let c = services.coordinator
+    c.activate()
+    func dictate(_ seconds: Double, release: Bool = true) {
+        services.hotkeys.send(.pressed(.pushToTalk, fnChord))
+        check(e2eWait { c.status == .listening }, "listening (\(c.status))")
+        services.audio.feed([Float](repeating: 0.1, count: Int(seconds * 16_000)))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))   // the frames reach the recording
+        if release { services.hotkeys.send(.released(.pushToTalk, fnChord)) }
+    }
+    func rawFiles() -> [String] {
+        ((try? FileManager.default.contentsOfDirectory(atPath: SuperFlowPaths.dictationAudio.path)) ?? []).filter { !$0.hasSuffix(".caf") }
+    }
+
+    // The engine fails: no text, but the audio becomes a History row that "Retry transcript" turns into words.
+    speech.error = SpeechError.failed("The speech engine stopped.")
+    dictate(2)
+    check(e2eWait { c.status == .error }, "an engine failure ends in error (\(c.status))")
+    guard let failed = services.store.lastDictation else { check(false, "the failed dictation is kept"); return }
+    check(failed.outcome == .error && failed.cleanedText.isEmpty && failed.audioFile != nil && abs(failed.duration - 2) < 0.1,
+          "kept with its audio: \(failed.outcome) \(failed.duration) s")
+    check(services.flowBar.notifications.last?.id == "dictation.failed" && services.flowBar.notifications.last?.actions == ["Open History"],
+          "the card points to History")
+    check(DictationActions.canRetry(failed) && DictationActions.notice(for: failed)?.contains("retry") == true, "History offers Retry transcript")
+    check(rawFiles().isEmpty, "no raw recording is left behind")
+    speech.error = nil
+    speech.text = "send the quarterly numbers to priya"
+    if case .failure(let error)? = complete(10, { try await c.retryTranscription(failed.id) }) { check(false, "retry failed: \(error)") }
+    let retried = services.store.dictation(failed.id)
+    check(retried?.cleanedText == "Send the quarterly numbers to priya." && retried?.outcome == .fallback && retried?.wordCount == 6,
+          "Retry transcript fills the row: \(String(describing: retried?.cleanedText))")
+    check(speech.lastClipSamples == 32_000 && c.status.canStart, "from the whole saved audio, beside the dictation state: \(speech.lastClipSamples)")
+
+    // Retry waits for a dictation to finish; a quick cancel keeps nothing.
+    services.hotkeys.send(.pressed(.pushToTalk, fnChord))
+    check(e2eWait { c.status == .listening }, "listening again")
+    if case .failure(let error)? = complete(10, { try await c.retryTranscription(failed.id) }) {
+        check(error as? DictationRetryError == .busy, "no retry while dictating")
+    } else { check(false, "retry during a dictation must be refused") }
+    let rows = services.store.dictations(matching: "", limit: 100, offset: 0).count
+    services.hotkeys.send(.pressed(.dismiss, KeyChord(UInt16(kVK_Escape))))
+    check(e2eWait { c.status == .dismissed } && services.store.dictations(matching: "", limit: 100, offset: 0).count == rows, "a tap cancelled keeps nothing")
+
+    // Cancelled after speaking: kept as a cancelled row with its audio.
+    dictate(2, release: false)
+    services.hotkeys.send(.pressed(.dismiss, KeyChord(UInt16(kVK_Escape))))
+    check(e2eWait { c.status == .dismissed }, "cancelled")
+    let cancelled = services.store.lastDictation
+    check(cancelled?.outcome == .dismissed && cancelled?.audioFile != nil && cancelled.map(DictationActions.canRetry) == true,
+          "a cancelled dictation can be recovered")
+    let gone = cancelled!
+    try? FileManager.default.removeItem(at: SuperFlowPaths.dictationAudio.appendingPathComponent(gone.audioFile ?? ""))
+    if case .failure(let error)? = complete(10, { try await c.retryTranscription(gone.id) }) {
+        check(error as? DictationRetryError == .audioUnavailable, "audio gone: says so")
+    } else { check(false, "retry without audio must fail") }
+
+    // The paste lands nowhere: the words are in History, the user's clipboard is untouched, and one click copies them.
+    services.inserter.refuse = "no_focused_element"
+    services.inserter.pasteboard.clearContents()
+    services.inserter.pasteboard.setString("the user's own clipboard", forType: .string)
+    speech.text = "call the bank tomorrow"
+    dictate(1)
+    check(e2eWait { c.status == .idle }, "paste failure ends normally")
+    check(services.store.lastDictation?.cleanedText == "Call the bank tomorrow." && services.store.lastDictation?.audioFile != nil,
+          "the words and audio are in History")
+    let card = services.flowBar.notifications.last
+    check(card?.id == "dictation.clipboard" && card?.actions == ["Copy"] && card?.title.contains("V to paste") == true, "the card offers Copy and the paste-last shortcut: \(String(describing: card?.title))")
+    check(services.inserter.pasteboard.string(forType: .string) == "the user's own clipboard", "the clipboard is left alone")
+    services.flowBar.click("dictation.clipboard", "Copy")
+    check(services.inserter.pasteboard.string(forType: .string) == "Call the bank tomorrow.", "one click copies the words")
+    services.inserter.refuse = nil
+
+    // The microphone is unplugged mid-sentence: the dictation finishes with what was heard instead of listening forever.
+    speech.text = "the first half"
+    RunLoop.main.run(until: Date().addingTimeInterval(DictationLimits.debounceWindow + 0.1))
+    services.hotkeys.send(.pressed(.handsFree, fnSpace))
+    check(e2eWait { c.status == .listening }, "hands-free listening")
+    services.audio.feed([Float](repeating: 0.1, count: 16_000))
+    check(e2eWait(8) { c.status == .idle }, "finished on its own when audio stopped (\(c.status))")
+    check(services.inserter.inserted.last == "The first half." && services.flowBar.notifications.contains { $0.id == "dictation.micLost" },
+          "what was said is inserted, and a card says why")
+    check(services.audio.holders == 0, "microphone released")
+
+    // A cleanup model that is installed but won't load: dictation goes on with the rules, and a card says so once.
+    let broken = SuperFlowPaths.support.appendingPathComponent("broken-\(UUID().uuidString).gguf")
+    try? Data("not a model".utf8).write(to: broken)
+    let models = E2EModels()
+    if let id = Defaults[.cleanupModelID] { models.locations[id] = broken }
+    let second = E2EServices(speech: speech, models: models, cleanup: TextCleaner())
+    defer { second.restore() }
+    second.coordinator.activate()
+    check(e2eWait(20) { second.flowBar.notifications.contains { $0.id == "dictation.cleanupModel" } }, "a card says the cleanup model didn't load")
+}
+
+/// History can't save (a full disk) or is turned off: the text still lands, paste-last still has it, and nothing is
+/// written to disk when History is off.
+@MainActor private func endToEndHistoryUnavailable() {
+    let speech = E2EScriptedSpeech()
+    let services = E2EServices(speech: speech, models: E2EModels(), cleanup: TextCleaner())
+    defer { services.restore() }
+    let full = E2EFullHistory(services.store)
+    Services.history = full
+    let c = services.coordinator
+    c.activate()
+    speech.text = "pick up the dry cleaning"
+    services.hotkeys.send(.pressed(.pushToTalk, fnChord))
+    check(e2eWait { c.status == .listening }, "listening")
+    services.audio.feed([Float](repeating: 0.1, count: 16_000))
+    services.hotkeys.send(.released(.pushToTalk, fnChord))
+    check(e2eWait { c.status == .idle }, "done")
+    check(services.inserter.inserted.last == "Pick up the dry cleaning." && services.flowBar.notifications.last?.title == "Storage Full",
+          "inserted, and a card says History couldn't save it")
+    c.pasteLastTranscript()
+    check(e2eWait { services.inserter.inserted.count == 2 } && services.inserter.inserted.last == "Pick up the dry cleaning.", "paste-last still has it")
+
+    Services.history = services.store
+    Defaults[.localDataPolicy] = .never
+    defer { Defaults.reset(.localDataPolicy) }
+    let filesBefore = (try? FileManager.default.contentsOfDirectory(atPath: SuperFlowPaths.dictationAudio.path)) ?? []
+    speech.text = "private thought"
+    services.hotkeys.send(.pressed(.pushToTalk, fnChord))
+    check(e2eWait { c.status == .listening }, "listening with History off")
+    services.audio.feed([Float](repeating: 0.1, count: 16_000))
+    check(((try? FileManager.default.contentsOfDirectory(atPath: SuperFlowPaths.dictationAudio.path)) ?? []) == filesBefore,
+          "nothing is written to disk while History is off")
+    services.hotkeys.send(.released(.pushToTalk, fnChord))
+    check(e2eWait { c.status == .idle } && services.store.lastDictation == nil, "and nothing is saved")
+    c.pasteLastTranscript()
+    check(e2eWait { services.inserter.inserted.last == "Private thought." }, "paste-last works from memory")
+}
+
+/// A History whose dictation saves fail like a full disk; everything else goes to the real store.
+@MainActor private final class E2EFullHistory: HistoryStoring {
+    let store: SQLiteStore
+    init(_ store: SQLiteStore) { self.store = store }
+    func dictation(_ id: UUID) -> Dictation? { store.dictation(id) }
+    func dictations(matching query: String, limit: Int, offset: Int) -> [Dictation] { store.dictations(matching: query, limit: limit, offset: offset) }
+    var lastDictation: Dictation? { store.lastDictation }
+    func save(_ dictation: Dictation) throws { throw StoreError.storageFull }
+    func deleteDictation(_ id: UUID) throws { try store.deleteDictation(id) }
+    func pruneDictations(before cutoff: Date) throws -> Int { try store.pruneDictations(before: cutoff) }
+    func eraseDictations() throws -> Int { try store.eraseDictations() }
+    func statistics(since: Date) -> (dictations: Int, words: Int, seconds: TimeInterval) { store.statistics(since: since) }
+    var dictionary: [DictionaryEntry] { store.dictionary }
+    func save(_ entry: DictionaryEntry) throws { try store.save(entry) }
+    func deleteDictionaryEntry(_ id: UUID) throws { try store.deleteDictionaryEntry(id) }
+    var snippets: [Snippet] { store.snippets }
+    func save(_ snippet: Snippet) throws { try store.save(snippet) }
+    func deleteSnippet(_ id: UUID) throws { try store.deleteSnippet(id) }
+    var transforms: [TransformPrompt] { store.transforms }
+    func save(_ transform: TransformPrompt) throws { try store.save(transform) }
+    func deleteTransform(_ id: UUID) throws { try store.deleteTransform(id) }
+    var notes: [ScratchNote] { store.notes }
+    func save(_ note: ScratchNote) throws { try store.save(note) }
+    func deleteNote(_ id: UUID) throws { try store.deleteNote(id) }
+    var changes: AnyPublisher<StoreChange, Never> { store.changes }
+}
+
+/// The real thing: a child process dictates hands-free and is killed with SIGKILL mid-sentence. The next launch (this
+/// process, on the child's folder) finds the audio, puts it in History, and "Retry transcript" gets the words back.
+@MainActor private func endToEndKilledMidDictation() {
+    let base = SuperFlowPaths.support.appendingPathComponent("killed-dictation-\(UUID().uuidString)", isDirectory: true)
+    guard let line = CrashChild.runAndKill("dictation", base: base), let id = UUID(uuidString: line) else {
+        check(false, "the child dictated and was killed"); return
+    }
+    let savedBase = SuperFlowPaths.base
+    SuperFlowPaths.base = base
+    defer { SuperFlowPaths.base = savedBase }
+    let raw = SuperFlowPaths.dictationAudio.appendingPathComponent("\(id.uuidString).pcm")
+    let size = (try? FileManager.default.attributesOfItem(atPath: raw.path)[.size] as? Int) ?? 0
+    check(size >= 3 * 16_000 * 4, "the audio up to the kill is on disk (\(size) bytes)")
+
+    let speech = E2EScriptedSpeech()
+    let services = E2EServices(speech: speech, models: E2EModels(), cleanup: TextCleaner())
+    defer { services.restore() }
+    services.coordinator.activate()
+    guard let row = services.store.dictation(id) else { check(false, "the interrupted dictation is in History"); return }
+    check(row.outcome == .error && row.mode == .handsFree && row.app?.bundleID == "com.apple.Notes" && row.duration >= 3 && row.audioFile != nil,
+          "with its audio, app and mode: \(row.outcome) \(row.duration) s")
+    check(services.flowBar.notifications.last?.id == "dictation.recovered", "a card says it was recovered")
+    check(!FileManager.default.fileExists(atPath: raw.path), "the raw recording became the kept audio")
+    speech.text = "the words before the crash"
+    if case .failure(let error)? = complete(10, { try await services.coordinator.retryTranscription(id) }) { check(false, "retry failed: \(error)") }
+    check(services.store.dictation(id)?.cleanedText == "The words before the crash." && speech.lastClipSamples >= 3 * 16_000,
+          "Retry transcript brings the words back: \(String(describing: services.store.dictation(id)?.cleanedText)) \(speech.lastClipSamples)")
+}
+
+/// The child process of `endToEndKilledMidDictation`: starts a hands-free dictation in Notes, says three seconds, prints
+/// the dictation's id once the audio is on disk, and waits to be killed.
+@MainActor func dictationCrashChild() -> Never {
+    let services = E2EServices(speech: E2EScriptedSpeech(), models: E2EModels(), cleanup: TextCleaner())
+    let c = services.coordinator
+    c.activate()
+    services.hotkeys.send(.pressed(.handsFree, fnSpace))
+    guard e2eWait(10, { c.status == .listening }) else { exit(2) }
+    services.audio.feed([Float](repeating: 0.1, count: 3 * 16_000))
+    var raw: String?
+    e2eWait(10) {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: SuperFlowPaths.dictationAudio.path)) ?? []
+        raw = names.first { name in
+            name.hasSuffix(".pcm")
+                && ((try? FileManager.default.attributesOfItem(atPath: SuperFlowPaths.dictationAudio.appendingPathComponent(name).path)[.size] as? Int) ?? 0)
+                    >= 3 * 16_000 * 4
+        }
+        return raw != nil
+    }
+    guard let raw else { exit(3) }
+    print(CrashChild.ready + String(raw.dropLast(4)))
+    while true { RunLoop.main.run(until: Date().addingTimeInterval(1)) }
 }
 
 // MARK: - Dictation with the real engines (dev models)

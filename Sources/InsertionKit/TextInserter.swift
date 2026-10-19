@@ -4,11 +4,12 @@ import SuperFlowCore
 
 /// TextInserting (behaviour.md §9). Paste first: the text goes on the pasteboard as a lazily provided item, ⌘V is
 /// posted for the key that types "v" on the user's layout, and the target reading the item is the proof the paste
-/// landed; the user's clipboard comes back afterwards. When the target never reads it, an Accessibility write over
-/// the selection is the fallback (or the first try with `InsertionMethod.accessibility`). Password fields are never
-/// written; without Accessibility, or when nothing takes the text, it stays on the clipboard.
+/// landed; the user's clipboard comes back afterwards, whether or not the paste landed (the caller keeps the words in
+/// History). When the target never reads it, an Accessibility write over the selection is the fallback (or the first
+/// try with `InsertionMethod.accessibility`). Password fields are never written. Without Accessibility nothing can be
+/// pasted for the user, so the text is put on the clipboard for them to paste.
 ///
-/// `leftOnClipboard` reasons are diagnostic codes in the style of §9.3 (`no_focused_element`,
+/// `notInserted` reasons are diagnostic codes in the style of §9.3 (`no_focused_element`,
 /// `paste_not_picked_up`, `accessibility_not_trusted`, `event_post_failed`), not user-facing copy.
 @MainActor
 final class TextInserter: TextInserting {
@@ -34,11 +35,11 @@ final class TextInserter: TextInserting {
         if field?.isSecure == true || SecureInput.isHeldByFrontmostApp { return .blockedSecureField }
         guard AXIsProcessTrusted() else {
             if !text.isEmpty { copyToClipboard(text) }
-            return .leftOnClipboard(reason: "accessibility_not_trusted")
+            return .notInserted(reason: "accessibility_not_trusted")
         }
         if !text.isEmpty, !(method == .accessibility && field?.insert(text) == true),
            let reason = await paste(text, fallback: method == .paste ? field : nil) {
-            return .leftOnClipboard(reason: reason)
+            return .notInserted(reason: reason)
         }
         for action in actions {
             await Self.sleep(Timing.actionDelay)
@@ -85,30 +86,27 @@ final class TextInserter: TextInserting {
 
     // MARK: - Paste
 
-    /// Pastes `text`; nil when it landed, else why it stayed on the clipboard.
+    /// Pastes `text`; nil when it landed, else why not. Either way the user's clipboard ends as it was (unless
+    /// restoring is off).
     private func paste(_ text: String, fallback field: FocusedField?) async -> String? {
-        let restoring = Defaults[.restoreClipboardAfterPaste]
-        let swap = PasteboardSwap(text: text, restoring: restoring)
+        let swap = PasteboardSwap(text: text, restoring: Defaults[.restoreClipboardAfterPaste])
         await waitForModifierRelease()
         let pastedAt = Date()
         guard SyntheticKeys.press(KeyboardLayout.commandKeyCode(for: "v", ansi: kVK_ANSI_V), flags: .maskCommand) else {
-            swap.keepText()
+            swap.finish()
             return "event_post_failed"
         }
         while !swap.wasRead, Date().timeIntervalSince(pastedAt) < Timing.readTimeout { await Self.sleep(Timing.poll) }
         guard swap.wasRead else {
             // Take the text off first so a late ⌘V can't paste it a second time.
             swap.withdraw()
-            if let field, field.insert(text) {
-                if restoring { swap.restore() } else { swap.keepText() }
-                return nil
-            }
-            swap.keepText()
-            return field == nil ? "no_focused_element" : "paste_not_picked_up"
+            let inserted = field?.insert(text) == true
+            swap.finish()
+            return inserted ? nil : field == nil ? "no_focused_element" : "paste_not_picked_up"
         }
         let readAt = Date()
         await Self.sleep(max(Timing.restoreDelay - readAt.timeIntervalSince(pastedAt), Timing.readGrace))
-        if restoring { swap.restore() } else { swap.keepText() }
+        swap.finish()
         return nil
     }
 

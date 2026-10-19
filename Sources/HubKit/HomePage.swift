@@ -197,9 +197,15 @@ struct DictationRow: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 HStack(spacing: 2) {
-                    IconButton(symbol: "doc.on.doc", help: "Copy transcript") { DictationActions.copy(dictation, state: state) }
-                    IconButton(symbol: "arrow.uturn.forward", help: "Paste into the last app") { DictationActions.reinsert(dictation) }
+                    Group {
+                        IconButton(symbol: "doc.on.doc", help: "Copy transcript") { DictationActions.copy(dictation, state: state) }
+                        IconButton(symbol: "arrow.uturn.forward", help: "Paste into the last app") { DictationActions.reinsert(dictation) }
+                    }
+                    .disabled(dictation.displayText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     Menu {
+                        if DictationActions.canRetry(dictation) {
+                            Button("Retry transcript") { DictationActions.retry(dictation, state: state) }
+                        }
                         if dictation.rawText != dictation.cleanedText {
                             Button(dictation.usesRawText ? "Redo AI edit" : "Undo AI edit") { DictationActions.toggleAIEdit(dictation, state: state) }
                         }
@@ -214,23 +220,42 @@ struct DictationRow: View {
                     .help("More options")
                 }
                 .opacity(hovering ? 1 : 0)
-                .disabled(DictationActions.notice(for: dictation) != nil && dictation.displayText.isEmpty)
             }
         }
     }
 }
 
 @MainActor
-enum DictationActions {
+public enum DictationActions {
     /// What a row says instead of text when the dictation produced none.
-    static func notice(for d: Dictation) -> String? {
+    public static func notice(for d: Dictation) -> String? {
         guard d.displayText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        let retry = canRetry(d)
         switch d.outcome {
         case .noAudio, .empty: return "No speech was heard."
-        case .dismissed: return "This dictation was cancelled."
-        case .error, .timeout, .verificationFailed: return "This dictation didn't finish."
+        case .dismissed: return retry ? "This transcription was cancelled. To recover it, open the options and choose Retry transcript."
+                                      : "This dictation was cancelled."
+        case .error, .timeout, .verificationFailed:
+            return retry ? "Your transcription was interrupted. But Super Flow can still retry it for you." : "This dictation didn't finish."
         case .processing: return "Still processing…"
         case .rawTranscript, .formatted, .fallback: return "Empty transcript."
+        }
+    }
+
+    /// "Retry transcript" is offered when the dictation's audio is still on this Mac (Command Mode instructions aren't).
+    public static func canRetry(_ d: Dictation) -> Bool {
+        guard d.mode != .command, let file = d.audioFile else { return false }
+        return FileManager.default.fileExists(atPath: SuperFlowPaths.dictationAudio.appendingPathComponent(file).path)
+    }
+
+    static func retry(_ d: Dictation, state: HubState) {
+        Task { @MainActor in
+            do {
+                try await Services.dictation?.retryTranscription(d.id)
+                state.showToast("Transcript recovered")
+            } catch {
+                state.showToast(error.localizedDescription, isError: true)
+            }
         }
     }
 

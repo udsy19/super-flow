@@ -41,10 +41,12 @@ enum DictationNotices {
                             variant: .mini, timeout: 5)
     }
 
-    static func gettingReady(fraction: Double?) -> FlowBarNotification {
+    static func gettingReady(fraction: Double?, kept: Bool = false) -> FlowBarNotification {
         let progress = fraction.map { " \(Int(($0 * 100).rounded(.down)))% so far." } ?? ""
         return FlowBarNotification(id: "dictation.preparing", title: "Still getting ready",
-                                   subtitle: "The speech model is downloading.\(progress) Try again in a moment.", variant: .alert)
+                                   subtitle: "The speech model is downloading.\(progress) " + (kept ? "Your audio is saved in History; retry it from there once it's ready."
+                                                                                                    : "Try again in a moment."),
+                                   variant: .alert, actions: kept ? [openHistory] : [])
     }
 
     static func otherKey(shortcut: String) -> FlowBarNotification {
@@ -68,9 +70,47 @@ enum DictationNotices {
                             variant: .error, timeout: nil, actions: [openSettings])
     }
 
-    static func leftOnClipboard() -> FlowBarNotification {
-        FlowBarNotification(id: "dictation.clipboard", title: "Copied to the clipboard",
-                            subtitle: "Nothing was selected to paste into. Press ⌘V where you want the text.", variant: .alert)
+    static let copy = "Copy"
+
+    /// The paste didn't land (no text field had focus, or the app didn't take it). The user's clipboard is untouched;
+    /// the words are in History, on the paste-last shortcut, and one click away.
+    static func pasteFailed(shortcut: String) -> FlowBarNotification {
+        FlowBarNotification(id: "dictation.clipboard", title: "Click a textbox and use \(shortcut) to paste",
+                            subtitle: "Nothing took the text, so your words are saved in History.", variant: .alert, timeout: 20, actions: [copy])
+    }
+
+    /// A Transform's result couldn't replace the selection.
+    static func transformNotPasted() -> FlowBarNotification {
+        FlowBarNotification(id: "dictation.clipboard", title: "Super Flow can't paste right now",
+                            subtitle: "Copy the result and paste it where you want it.", variant: .alert, timeout: 20, actions: [copy])
+    }
+
+    /// History couldn't save the dictation (a full disk, a broken store): the text stays on the paste-last shortcut.
+    static func historyNotSaved(_ error: Error, shortcut: String) -> FlowBarNotification {
+        let full = error as? StoreError == .storageFull
+        return FlowBarNotification(id: "dictation.notSaved", title: full ? "Storage Full" : "Couldn't save to History",
+                                   subtitle: (full ? "You are running out of space on your computer." : error.localizedDescription)
+                                       + " \(shortcut) still pastes your last dictation.", variant: .error, timeout: nil)
+    }
+
+    /// The microphone stopped delivering audio mid-dictation.
+    static func microphoneLost() -> FlowBarNotification {
+        FlowBarNotification(id: "dictation.micLost", title: "Microphone disconnected",
+                            subtitle: "We kept what you said before it stopped. Check the microphone, then keep going.", variant: .alert)
+    }
+
+    /// Dictations a crash or force quit interrupted were found at launch.
+    static func recovered(count: Int) -> FlowBarNotification {
+        FlowBarNotification(id: "dictation.recovered", title: count == 1 ? "Recovered an interrupted dictation" : "Recovered \(count) interrupted dictations",
+                            subtitle: "Super Flow stopped while you were dictating. Your audio was saved; retry it from History.",
+                            variant: .success, timeout: nil, actions: [openHistory])
+    }
+
+    /// The cleanup model is installed but won't load.
+    static func cleanupModelFailed() -> FlowBarNotification {
+        FlowBarNotification(id: "dictation.cleanupModel", title: "The cleanup model couldn't load",
+                            subtitle: "Dictation keeps working with basic cleanup. Check it in Settings › Models.", variant: .alert, timeout: nil,
+                            actions: [openModels])
     }
 
     static func blockedSecureInsert() -> FlowBarNotification {
@@ -78,8 +118,10 @@ enum DictationNotices {
                             subtitle: "Nothing was pasted. Your words are in History.", variant: .error, actions: [openHistory])
     }
 
-    static func transcriptionFailed(_ message: String) -> FlowBarNotification {
-        FlowBarNotification(id: "dictation.failed", title: "Something's not right", subtitle: message, variant: .error)
+    static func transcriptionFailed(_ message: String, kept: Bool = false) -> FlowBarNotification {
+        FlowBarNotification(id: "dictation.failed", title: "Something's not right",
+                            subtitle: message + (kept ? " Your audio is saved; you can recover it from History." : ""), variant: .error,
+                            actions: kept ? [openHistory] : [])
     }
 
     static func secureInput(owner: String?) -> FlowBarNotification {

@@ -46,6 +46,9 @@ public final class DictationCoordinator: DictationControlling {
     private var transform: (name: String, task: Task<Void, Never>)?
     private var completedRevert: Task<Void, Never>?
     private var engineWarmup: Task<Void, Never>?
+    /// The last text when it isn't in History (History is off, or saving failed): paste-last and copy-last use it.
+    private var lastUnsavedText: String?
+    private var reportedCleanupLoadFailure = false
 
     public init() {}
 
@@ -55,6 +58,7 @@ public final class DictationCoordinator: DictationControlling {
     /// Globe-key setting that collides with Apple's dictation. Called once after every module is installed.
     public func activate() {
         guard hotkeyTask == nil else { return }
+        recoverInterruptedDictations()
         let events = Services.hotkeys.events
         hotkeyTask = Task { [weak self] in
             for await event in events { self?.handle(event) }
@@ -106,6 +110,13 @@ public final class DictationCoordinator: DictationControlling {
             if Services.models.state(of: cleanup) == .installed, !Services.cleanup.isModelReady(for: .cleanup) {
                 do { try await Services.cleanup.prepare(modelID: cleanup, role: .cleanup) } catch {
                     Log.app.error("Cleanup model not ready: \(error.localizedDescription, privacy: .public)")
+                    // Installed but it won't load (a damaged file, too little memory): dictation keeps working on the
+                    // rules alone; say so once rather than quietly writing rougher text.
+                    let missing: Bool = { if case .modelNotInstalled? = error as? SpeechError { return true } else { return false } }()
+                    if !missing, !self.reportedCleanupLoadFailure {
+                        self.reportedCleanupLoadFailure = true
+                        Services.flowBar.show(DictationNotices.cleanupModelFailed()) { _ in Services.hub.showSettings(.models) }
+                    }
                 }
             }
         }
@@ -160,7 +171,8 @@ public final class DictationCoordinator: DictationControlling {
 
     private func closeCards() {
         for id in ["dictation.secureField", "dictation.noAudio", "dictation.noSpeech", "dictation.otherKey", "dictation.clipboard",
-                   "transform.noSelection", "transform.failed", "dictation.failed", "dictation.learned", "dictation.preparing"] {
+                   "transform.noSelection", "transform.failed", "dictation.failed", "dictation.learned", "dictation.preparing",
+                   "dictation.micLost", "dictation.notSaved", "dictation.recovered", "dictation.cleanupModel"] {
             Services.flowBar.dismiss(notificationID: id)
         }
     }
@@ -233,6 +245,8 @@ public final class DictationCoordinator: DictationControlling {
         session.cancelled = true
         session.finishing?.cancel()
         releaseCapture(session)
+        // A cancelled dictation that heard something stays in History with its audio ("Retry transcript").
+        keepForRetry(session, outcome: .dismissed)
         if reason == .otherShortcut, session.listening {
             Services.flowBar.show(DictationNotices.otherKey(shortcut: Defaults[.shortcuts].chords(for: .pushToTalk).first?.displayString ?? "Fn")) { _ in }
         }
@@ -240,19 +254,22 @@ public final class DictationCoordinator: DictationControlling {
     }
 
     public func pasteLastTranscript() {
-        guard let last = Services.history.lastDictation else { return }
+        guard let text = lastText else { return }
         Task {
-            if await Services.insertion.insert(last.displayText, actions: [], method: Defaults[.insertionMethod]) == .inserted {
+            if await Services.insertion.insert(text, actions: [], method: Defaults[.insertionMethod]) == .inserted {
                 Services.audio.play(.paste)
             }
         }
     }
 
     public func copyLastTranscript() {
-        guard let last = Services.history.lastDictation else { return }
-        Services.insertion.copyToClipboard(last.displayText)
+        guard let text = lastText else { return }
+        Services.insertion.copyToClipboard(text)
         Services.flowBar.show(DictationNotices.transformCopied()) { _ in }
     }
+
+    /// The last dictation's text: from History, or held here when it couldn't be saved there.
+    private var lastText: String? { lastUnsavedText ?? Services.history.lastDictation?.displayText }
 
     // MARK: Capture
 
@@ -282,9 +299,13 @@ public final class DictationCoordinator: DictationControlling {
             let style = styleProfile(for: session.context)
             Task { await Services.cleanup.warm(style: style.style, level: style.level, category: session.context.app?.category ?? .other) }
         }
+        if Defaults[.localDataPolicy] != .never {
+            session.recording = DictationRecording(DictationRecording.Info(id: session.id, startedAt: session.startedAt, app: session.context.app,
+                                                                           mode: session.mode, source: session.source))
+        }
         let (clips, clipContinuation) = AsyncStream<AudioClip>.makeStream()
         session.clips = clipContinuation
-        let options = transcriptionOptions(for: session)
+        let options = transcriptionOptions(for: session.context)
         let events = Services.speech.transcribeIncrementally(clips, options: options, priority: .dictation)
         session.transcription = Task { @MainActor [weak self] in
             do {
@@ -308,16 +329,29 @@ public final class DictationCoordinator: DictationControlling {
             for await frame in frames where frame.channel == .mic {
                 guard !session.cancelled, !session.stopped else { return }
                 session.lastFrameAt = Date()
-                session.samples += frame.samples
+                session.recording?.append(frame.samples)
                 clipContinuation.yield(AudioClip(samples: frame.samples, startTime: frame.time))
             }
         }
         session.watchdog = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(DictationLimits.noAudioTimeout * 1_000_000_000))
-            guard !Task.isCancelled, let self, self.session === session, session.listening, session.lastFrameAt == nil else { return }
-            Services.flowBar.show(DictationNotices.noAudio()) { _ in }
-            Services.audio.play(.notificationError)
-            self.dismiss(.noAudioDuringDictation)
+            let started = Date()
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                guard !Task.isCancelled, let self, self.session === session, session.listening, !session.stopped else { return }
+                if let last = session.lastFrameAt {
+                    // Audio stopped arriving mid-dictation (the microphone was unplugged, or its permission withdrawn):
+                    // finish with what was heard instead of listening to nothing.
+                    guard Date().timeIntervalSince(last) >= DictationLimits.noAudioTimeout else { continue }
+                    Services.flowBar.show(DictationNotices.microphoneLost()) { _ in }
+                    self.finish()
+                } else {
+                    guard Date().timeIntervalSince(started) >= DictationLimits.noAudioTimeout else { continue }
+                    Services.flowBar.show(DictationNotices.noAudio()) { _ in }
+                    Services.audio.play(.notificationError)
+                    self.dismiss(.noAudioDuringDictation)
+                }
+                return
+            }
         }
         session.limit = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(DictationLimits.sessionWarningAt * 1_000_000_000))
@@ -385,7 +419,9 @@ public final class DictationCoordinator: DictationControlling {
         let speechSeconds = Date().timeIntervalSince(speechStarted)
         guard self.session === session, !session.cancelled else { return }
         if let error = session.speechError {
-            fail(session, with: speechNotice(for: error))
+            // The words aren't lost: the audio goes to History for "Retry transcript".
+            let kept = keepForRetry(session, outcome: .error)
+            fail(session, with: speechNotice(for: error, kept: kept))
             return
         }
         guard let transcript, !transcript.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -393,6 +429,7 @@ public final class DictationCoordinator: DictationControlling {
             end(session, status: .idle)
             return
         }
+        session.heard = transcript
         switch session.mode {
         case .command: await runCommand(session, instruction: transcript.text, duration: duration)
         case .pushToTalk, .handsFree: await insert(session, transcript: transcript, duration: duration, speechSeconds: speechSeconds)
@@ -417,16 +454,13 @@ public final class DictationCoordinator: DictationControlling {
         let insertSeconds = Date().timeIntervalSince(insertStarted)
         guard self.session === session else { return }
 
-        var dictation = Dictation(rawText: transcript.text, cleanedText: text, app: context.app, language: transcript.language,
-                                  duration: duration, mode: session.mode, source: session.source,
+        var dictation = Dictation(id: session.id, createdAt: session.startedAt, rawText: transcript.text, cleanedText: text, app: context.app,
+                                  language: transcript.language, duration: duration, mode: session.mode, source: session.source,
                                   outcome: output.usedLLM ? .formatted : output.skipReason == .clientDisabled ? .rawTranscript : .fallback)
         if outcome == .blockedSecureField { dictation.outcome = .error }
-        if Defaults[.localDataPolicy] == .store, !session.samples.isEmpty {
-            dictation.audioFile = try? DictationAudioFile.write(session.samples, id: dictation.id)
-        }
-        if Defaults[.localDataPolicy] != .never {
-            do { try Services.history.save(dictation) } catch { Log.store.error("Couldn't save the dictation: \(error.localizedDescription, privacy: .public)") }
-        }
+        // Audio is kept for playback and retry when History keeps everything, and for a text that didn't land anywhere.
+        dictation.audioFile = settleAudio(session, keep: Defaults[.localDataPolicy] == .store || outcome != .inserted)
+        remember(dictation)
         for id in output.expandedSnippets {
             guard var snippet = Services.history.snippets.first(where: { $0.id == id }) else { continue }
             snippet.useCount += 1
@@ -440,9 +474,15 @@ public final class DictationCoordinator: DictationControlling {
         case .inserted:
             if output.usedLLM, output.text != transcript.text { showCompleted(.cleanupCompleted, session) } else { end(session, status: .idle) }
             if Defaults[.shouldAutoLearnWords], !text.isEmpty { watchEdits(of: dictation) }
-        case .leftOnClipboard(let reason):
-            Services.flowBar.show(reason == "accessibility_not_trusted" ? DictationNotices.accessibilityRequired() : DictationNotices.leftOnClipboard()) { _ in
-                Permissions.open(.accessibility)
+        case .notInserted(let reason) where reason == "accessibility_not_trusted":
+            Services.flowBar.show(DictationNotices.accessibilityRequired()) { _ in Permissions.open(.accessibility) }
+            end(session, status: .idle)
+        case .notInserted:
+            // The paste didn't land and the user's clipboard is back as it was: the words are in History and one click
+            // (or the paste-last shortcut) away.
+            Services.flowBar.show(DictationNotices.pasteFailed(shortcut: pasteLastShortcut)) { _ in
+                Services.insertion.copyToClipboard(text)
+                Services.flowBar.show(DictationNotices.transformCopied()) { _ in }
             }
             end(session, status: .idle)
         case .blockedSecureField:
@@ -464,13 +504,19 @@ public final class DictationCoordinator: DictationControlling {
                 ? await Services.insertion.insert(result, actions: [], method: Defaults[.insertionMethod])
                 : await Services.insertion.replaceSelection(with: result)
             guard self.session === session else { return }
-            let dictation = Dictation(rawText: instruction, cleanedText: result, app: session.context.app, duration: duration, mode: .command,
-                                      source: session.source, outcome: outcome == .inserted ? .formatted : .error)
-            if Defaults[.localDataPolicy] != .never { try? Services.history.save(dictation) }
+            _ = settleAudio(session, keep: false)
+            let dictation = Dictation(id: session.id, createdAt: session.startedAt, rawText: instruction, cleanedText: result, app: session.context.app,
+                                      duration: duration, mode: .command, source: session.source, outcome: outcome == .inserted ? .formatted : .error)
+            remember(dictation)
             lastResult = Result(dictationID: dictation.id, rawText: instruction, insertedText: result, usedLLM: true, outcome: outcome, seconds: (0, 0, 0))
             switch outcome {
             case .inserted: showCompleted(.transformCompleted, session)
-            case .leftOnClipboard: Services.flowBar.show(DictationNotices.leftOnClipboard()) { _ in }; end(session, status: .idle)
+            case .notInserted:
+                Services.flowBar.show(DictationNotices.pasteFailed(shortcut: pasteLastShortcut)) { _ in
+                    Services.insertion.copyToClipboard(result)
+                    Services.flowBar.show(DictationNotices.transformCopied()) { _ in }
+                }
+                end(session, status: .idle)
             case .blockedSecureField: Services.flowBar.show(DictationNotices.blockedSecureInsert()) { _ in }; end(session, status: .idle)
             }
         } catch {
@@ -527,6 +573,7 @@ public final class DictationCoordinator: DictationControlling {
     private func end(_ session: Session, status: DictationStatus, resting: Bool = true) {
         guard self.session === session else { return }
         releaseCapture(session)
+        _ = settleAudio(session, keep: false)
         self.session = nil
         mode = nil
         Services.models.setUserBusy(false)
@@ -559,7 +606,11 @@ public final class DictationCoordinator: DictationControlling {
                     Services.flowBar.show(DictationNotices.transformUnchanged()) { _ in }
                 } else if Defaults[.polishAutoPaste] {
                     if await Services.insertion.replaceSelection(with: result) != .inserted {
-                        Services.flowBar.show(DictationNotices.leftOnClipboard()) { _ in }
+                        // The result isn't in History: one click puts it on the clipboard.
+                        Services.flowBar.show(DictationNotices.transformNotPasted()) { _ in
+                            Services.insertion.copyToClipboard(result)
+                            Services.flowBar.show(DictationNotices.transformCopied()) { _ in }
+                        }
                     }
                 } else {
                     Services.insertion.copyToClipboard(result)
@@ -611,12 +662,12 @@ public final class DictationCoordinator: DictationControlling {
         return (profile.style(for: (context.app?.category ?? .other).styleCategory), profile.cleanupLevel)
     }
 
-    private func transcriptionOptions(for session: Session) -> TranscriptionOptions {
+    private func transcriptionOptions(for context: AppContext) -> TranscriptionOptions {
         var seen: Set<String> = []
         let languages = Defaults[.autoDetectLanguage] ? [] : Defaults[.selectedLanguages].map(SupportedLanguages.base).filter { seen.insert($0).inserted }
         let dictionary = Services.history.dictionary
         let words = (dictionary.filter(\.isStarred) + dictionary.filter { !$0.isStarred }).map { $0.replacement ?? $0.phrase }
-        let vocabulary = Array(NSOrderedSet(array: words + session.context.nearbyWords).compactMap { $0 as? String }.prefix(100))
+        let vocabulary = Array(NSOrderedSet(array: words + context.nearbyWords).compactMap { $0 as? String }.prefix(100))
         return TranscriptionOptions(languages: languages, vocabulary: vocabulary, previousText: Services.history.lastDictation?.displayText)
     }
 
@@ -625,17 +676,103 @@ public final class DictationCoordinator: DictationControlling {
         return DictationNotices.microphoneFailed(error.localizedDescription)
     }
 
-    private func speechNotice(for error: Error) -> FlowBarNotification {
+    private func speechNotice(for error: Error, kept: Bool) -> FlowBarNotification {
         if let speech = error as? SpeechError, case .modelNotInstalled = speech {
-            return DictationNotices.gettingReady(fraction: Services.models.readiness(of: Defaults[.asrModelID]))
+            return DictationNotices.gettingReady(fraction: Services.models.readiness(of: Defaults[.asrModelID]), kept: kept)
         }
-        return DictationNotices.transcriptionFailed(error.localizedDescription)
+        return DictationNotices.transcriptionFailed(error.localizedDescription, kept: kept)
+    }
+
+    private var pasteLastShortcut: String { Defaults[.shortcuts].chords(for: .pasteLastText).first?.displayString ?? "⌃⌘V" }
+
+    // MARK: Keeping what was said
+
+    /// Ends the session's audio file: kept as `<id>.caf` (its name is returned) or deleted.
+    private func settleAudio(_ session: Session, keep: Bool) -> String? {
+        guard let recording = session.recording else { return nil }
+        session.recording = nil
+        return recording.finish(keep: keep)
+    }
+
+    /// Saves a finished dictation to History (unless History is off); when it can't be saved, its text stays here for
+    /// paste-last and a card says why.
+    private func remember(_ dictation: Dictation) {
+        guard Defaults[.localDataPolicy] != .never else { lastUnsavedText = dictation.displayText; return }
+        do {
+            try Services.history.save(dictation)
+            lastUnsavedText = nil
+        } catch {
+            Log.store.error("Couldn't save the dictation: \(error.localizedDescription, privacy: .public)")
+            lastUnsavedText = dictation.displayText
+            Services.flowBar.show(DictationNotices.historyNotSaved(error, shortcut: pasteLastShortcut)) { _ in }
+        }
+    }
+
+    /// Keeps a dictation that produced no text in the end (the engine failed, or it was cancelled) as a History row with
+    /// its audio, so "Retry transcript" can bring the words back. Taps and Command Mode instructions aren't kept.
+    @discardableResult
+    private func keepForRetry(_ session: Session, outcome: DictationOutcome) -> Bool {
+        guard Defaults[.localDataPolicy] != .never, session.mode != .command, let recording = session.recording,
+              recording.duration >= DictationLimits.silentTapDuration, let file = settleAudio(session, keep: true) else { return false }
+        let text = session.heard?.text ?? ""
+        let row = Dictation(id: session.id, createdAt: session.startedAt, rawText: text, cleanedText: text, app: session.context.app,
+                            language: session.heard?.language ?? "en", duration: Double(recording.sampleCount) / Double(AudioClip.sampleRate),
+                            mode: session.mode, source: session.source, outcome: outcome, audioFile: file)
+        do {
+            try Services.history.save(row)
+            return true
+        } catch {
+            Log.store.error("Couldn't keep the dictation for retry: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+    }
+
+    /// Dictations a crash, force quit or power loss interrupted: their audio becomes History rows to retry.
+    private func recoverInterruptedDictations() {
+        var kept = 0
+        for row in DictationRecording.recoverLeftovers(except: session?.id) {
+            do { try Services.history.save(row); kept += 1 } catch {
+                Log.store.error("Couldn't keep an interrupted dictation: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+        guard kept > 0 else { return }
+        Log.app.info("Recovered \(kept) interrupted dictation(s)")
+        Services.flowBar.show(DictationNotices.recovered(count: kept)) { _ in Services.hub.show(.history) }
+    }
+
+    // MARK: Retry
+
+    /// Runs beside the dictation state machine, so the hotkey still starts a dictation meanwhile (which then goes first
+    /// on the speech engine).
+    public func retryTranscription(_ id: UUID) async throws {
+        guard status.canStart else { throw DictationRetryError.busy }
+        guard var row = Services.history.dictation(id) else { throw StoreError.notFound(id) }
+        guard let file = row.audioFile, let samples = DictationRecording.samples(of: file), !samples.isEmpty else {
+            throw DictationRetryError.audioUnavailable
+        }
+        let context = AppContext(app: row.app)
+        let transcript = try await Services.speech.transcribe(AudioClip(samples: samples), options: transcriptionOptions(for: context), priority: .dictation)
+        let style = styleProfile(for: context)
+        let format = row.app.flatMap { Defaults[.appTranscriptionFormats][$0.bundleID] } ?? Defaults[.defaultTranscriptionFormat]
+        let output = await Services.cleanup.clean(CleanupInput(transcript: transcript, context: context, style: style.style, level: style.level,
+                                                               format: format, dictionary: Services.history.dictionary,
+                                                               snippets: Services.history.snippets),
+                                                  budget: DictationLimits.cleanupBudgetLong)
+        row.rawText = transcript.text
+        row.cleanedText = output.text.isEmpty ? transcript.text : output.text
+        row.language = transcript.language
+        row.wordCount = Dictation.countWords(row.cleanedText)
+        row.usesRawText = false
+        row.outcome = output.usedLLM ? .formatted : output.skipReason == .clientDisabled ? .rawTranscript : .fallback
+        try Services.history.save(row)
     }
 }
 
 /// One dictation from key-down to insertion.
 @MainActor
 final class Session {
+    /// The History row's id, and the name of its audio file.
+    let id = UUID()
     var mode: DictationMode
     let source: DictationSource
     let context: AppContext
@@ -650,7 +787,10 @@ final class Session {
     var cancelled = false
     var holdsMicrophone = false
     var partial = ""
-    var samples: [Float] = []
+    /// The audio as it is recorded (nil when History is off or the file couldn't be created).
+    var recording: DictationRecording?
+    /// The final transcript once recognition finished (kept with a dictation cancelled while it was being processed).
+    var heard: Transcript?
     var lastFrameAt: Date?
     var speechError: Error?
     var clips: AsyncStream<AudioClip>.Continuation?

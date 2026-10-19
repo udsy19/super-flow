@@ -81,8 +81,14 @@ public final class PasteboardSwap {
         changeCount = pasteboard.changeCount
     }
 
-    /// Leaves the text on the clipboard as plain, lasting text (failed paste, or restoring is off), unless something
-    /// else was copied since. Returns whether it did.
+    /// The paste is over, landed or not: the user's clipboard comes back when restoring (a failed paste's words are kept
+    /// in History, never left in place of what the user copied), else the text stays as a plain, lasting copy. A newer
+    /// copy is never overwritten. Returns whether the pasteboard was changed.
+    @discardableResult
+    public func finish() -> Bool { saved != nil ? restore() : keepText() }
+
+    /// Leaves the text on the clipboard as plain, lasting text (restoring is off), unless something else was copied
+    /// since. Returns whether it did.
     @discardableResult
     public func keepText() -> Bool {
         guard isCurrent else { return false }

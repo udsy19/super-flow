@@ -18,6 +18,29 @@ public enum Log {
     public static let updates = Logger(subsystem: SuperFlowPaths.bundleID, category: "updates")
 }
 
+// MARK: - Audio files
+
+public extension AudioClip {
+    /// Every sample of a 16 kHz mono audio file (a kept dictation, a meeting track). Read in blocks to the end: a single
+    /// `AVAudioFile.read(into:)` stops at the last whole 1024-frame packet and would drop the tail.
+    static func samples(of url: URL) throws -> [Float] {
+        let file = try AVAudioFile(forReading: url, commonFormat: .pcmFormatFloat32, interleaved: false)
+        let block: AVAudioFrameCount = 16_384
+        guard file.processingFormat.sampleRate == Double(sampleRate), file.processingFormat.channelCount == 1,
+              let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: block) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        var samples: [Float] = []
+        samples.reserveCapacity(Int(max(file.length, 0)))
+        while file.framePosition < file.length {
+            try file.read(into: buffer, frameCount: block)
+            guard buffer.frameLength > 0, let channel = buffer.floatChannelData?[0] else { break }
+            samples.append(contentsOf: UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength)))
+        }
+        return samples
+    }
+}
+
 // MARK: - Alerts
 
 @MainActor
