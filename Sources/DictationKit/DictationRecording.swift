@@ -19,6 +19,8 @@ final class DictationRecording {
 
     let info: Info
     private var handle: FileHandle?
+    /// Held while recording, so another running copy's launch recovery leaves this file alone.
+    private var lock: WriterLock?
     private(set) var sampleCount = 0
 
     private static var folder: URL { SuperFlowPaths.dictationAudio }
@@ -37,6 +39,7 @@ final class DictationRecording {
             return nil
         }
         self.handle = handle
+        lock = WriterLock(pcm)
     }
 
     /// Appends samples straight to the file (the kernel keeps them even if the app dies the next moment). A write the
@@ -59,6 +62,8 @@ final class DictationRecording {
     func finish(keep: Bool) -> String? {
         try? handle?.close()
         handle = nil
+        lock?.release()
+        lock = nil
         return Self.settle(info.id, keep: keep && sampleCount > 0)
     }
 
@@ -118,7 +123,7 @@ final class DictationRecording {
         let names = (try? fm.contentsOfDirectory(atPath: folder.path)) ?? []
         var recovered: [Dictation] = []
         for name in names where name.hasSuffix(".pcm") {
-            guard let id = UUID(uuidString: String(name.dropLast(4))), id != running else { continue }
+            guard let id = UUID(uuidString: String(name.dropLast(4))), id != running, !WriterLock.isHeld(url(id, "pcm")) else { continue }
             let info = (try? Data(contentsOf: url(id, "json"))).flatMap { try? JSON.decoder.decode(Info.self, from: $0) }
             let samples = ((try? fm.attributesOfItem(atPath: url(id, "pcm").path))?[.size] as? Int ?? 0) / 4
             let duration = Double(samples) / Double(AudioClip.sampleRate)

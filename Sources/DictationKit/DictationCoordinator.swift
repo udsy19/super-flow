@@ -99,6 +99,7 @@ public final class DictationCoordinator: DictationControlling {
         guard Defaults[.keepModelsInMemory] else { return }
         engineWarmup?.cancel()
         engineWarmup = Task { @MainActor in
+            guard !Task.isCancelled else { return }
             let asr = Defaults[.asrModelID]
             if Services.models.state(of: asr) == .installed, Services.speech.activeEngineID != asr, Services.speech.availableEngines.contains(asr) {
                 do { try await Services.speech.prepare(modelID: asr) } catch {

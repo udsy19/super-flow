@@ -108,6 +108,7 @@ public final class MeetingRecorder: MeetingRecording {
         let meeting = Meeting(title: event?.title ?? detected?.title ?? MeetingExport.untitled, platform: detected?.platform ?? .other,
                               calendarEventID: event?.id, participants: event?.attendees ?? [])
         let session = RecordingSession(meeting: meeting, detectedID: detected?.id, folder: SuperFlowPaths.meetingAudio(meeting.id))
+        session.lock = WriterLock(session.folder.appendingPathComponent(RecordingSession.lockName))
         session.vocabulary = vocabulary(for: meeting)
         self.session = session
         Task { await Self.prepareSpeechEngine() }
@@ -431,6 +432,9 @@ public final class MeetingRecorder: MeetingRecording {
     /// Lets go of the captures this recording started (the microphone is shared with dictation and reference-counted)
     /// and ends its frame subscription.
     private func releaseCapture(_ session: RecordingSession) {
+        session.lock?.release()
+        session.lock = nil
+        try? FileManager.default.removeItem(at: session.folder.appendingPathComponent(RecordingSession.lockName))
         if session.holdsMicrophone { Services.audio.stopMicrophone() }
         if session.holdsSystemAudio { Services.audio.stopSystemAudio() }
         session.holdsMicrophone = false
@@ -594,7 +598,11 @@ public final class MeetingRecorder: MeetingRecording {
         let root = SuperFlowPaths.meetingAudio
         let folders = (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: [.creationDateKey])) ?? []
         for folder in folders {
+            let lock = folder.appendingPathComponent(RecordingSession.lockName)
             guard let id = UUID(uuidString: folder.lastPathComponent), id != session?.meeting.id, processing[id] == nil else { continue }
+            // Another running copy of Super Flow is recording into it: not ours to finish.
+            guard !WriterLock.isHeld(lock) else { continue }
+            try? fm.removeItem(at: lock)
             let chunks = AudioChannel.allCases.contains { !ChunkedTrackWriter.chunks(in: folder, channel: $0).isEmpty }
             var meeting: Meeting
             if let row = Services.meetings.meeting(id) {
@@ -703,6 +711,9 @@ final class RecordingSession {
     var mappedChunks = 0
     /// When the recording began, for the microphone watchdog before the first frame.
     let startedAt = Date()
+    /// `lockName` in the folder, held while recording (`WriterLock`).
+    static let lockName = "recording.lock"
+    var lock: WriterLock?
     /// When each channel last delivered a frame.
     var lastFrameAt: [AudioChannel: Date] = [:]
     var reportedMicLoss = false

@@ -722,7 +722,20 @@ private func speakerLines(_ meeting: Meeting) -> [String] {
 /// next launch (this process, on the child's folder) finds the audio and the saved transcript and finishes the meeting.
 @MainActor private func meetingKilledMidRecording() {
     let base = SuperFlowPaths.support.appendingPathComponent("killed-meeting-\(UUID().uuidString)", isDirectory: true)
-    guard let line = CrashChild.runAndKill("meeting", base: base), let id = UUID(uuidString: line) else {
+    let line = CrashChild.runAndKill("meeting", base: base) { line in
+        // While the child still records, this process is a second running copy: its recovery must leave the folder be.
+        let savedBase = SuperFlowPaths.base
+        SuperFlowPaths.base = base
+        defer { SuperFlowPaths.base = savedBase }
+        let fakes = MeetingFakes()
+        defer { fakes.restore() }
+        let recorder = MeetingRecorder()
+        recorder.recoverInterruptedMeetings()
+        let folder = SuperFlowPaths.meetingAudio.appendingPathComponent(line)
+        check(recorder.state == .idle && fakes.store.rows.isEmpty && !ChunkedTrackWriter.chunks(in: folder, channel: .mic).isEmpty,
+              "a recording another running copy holds is left alone")
+    }
+    guard let line, let id = UUID(uuidString: line) else {
         check(false, "the child recorded and was killed"); return
     }
     let savedBase = SuperFlowPaths.base

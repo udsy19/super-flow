@@ -69,3 +69,6 @@ All notable changes to Super Flow are recorded here. The format follows Keep a C
   instead of leaving the recording silent.
 - Meeting audio retention never deletes audio that is a meeting's only record (nothing was transcribed), so "Retry
   transcript" keeps working; the meeting page no longer shows an expiry date for it.
+- A second running copy of Super Flow (a development build beside the installed app) never finishes, moves or deletes
+  a dictation or meeting the other copy is still recording: recordings hold a lock that launch recovery respects, and
+  the kernel releases it the moment a process dies.

@@ -19,9 +19,10 @@ enum CrashChild {
         }
     }
 
-    /// In the parent: starts the child on `base`, waits for its ready line, kills it with SIGKILL and returns the value
-    /// it printed; nil when it never got ready.
-    static func runAndKill(_ scenario: String, base: URL, timeout: TimeInterval = 60) -> String? {
+    /// In the parent: starts the child on `base` and waits for its ready line; `alive` runs while the child is still
+    /// recording (another running copy of the app), then the child is killed with SIGKILL. Returns the value it printed;
+    /// nil when it never got ready.
+    static func runAndKill(_ scenario: String, base: URL, timeout: TimeInterval = 60, alive: (String) -> Void = { _ in }) -> String? {
         guard let executable = Bundle.main.executableURL else { return nil }
         let child = Process()
         child.executableURL = executable
@@ -39,6 +40,7 @@ enum CrashChild {
             value = lines.first { $0.hasPrefix(ready) }.map { String($0.dropFirst(ready.count)) }
             if value == nil { Thread.sleep(forTimeInterval: 0.02) }
         }
+        if let value, child.isRunning { alive(value) }
         // Only the process this test started is ever signalled.
         if child.isRunning { kill(child.processIdentifier, SIGKILL) }
         child.waitUntilExit()

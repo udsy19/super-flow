@@ -79,3 +79,34 @@ public enum SuperFlowPaths {
         return url
     }
 }
+
+/// "A running copy of Super Flow is writing this": an advisory `flock` a recording holds for as long as it records.
+/// Launch recovery leaves alone whatever another running copy still holds (a second instance must never finish, move
+/// or delete a recording in progress), and the kernel drops the lock the moment its process dies, so a crash's leftovers
+/// are recoverable at once.
+public final class WriterLock {
+    private var descriptor: Int32
+
+    /// Takes the lock on `url` (created when missing); nil when the file can't be opened.
+    public init?(_ url: URL) {
+        descriptor = open(url.path, O_RDWR | O_CREAT, 0o644)
+        guard descriptor >= 0 else { return nil }
+        _ = flock(descriptor, LOCK_EX | LOCK_NB)
+    }
+
+    deinit { release() }
+
+    public func release() {
+        guard descriptor >= 0 else { return }
+        close(descriptor)
+        descriptor = -1
+    }
+
+    /// Whether some process holds the lock on `url` right now.
+    public static func isHeld(_ url: URL) -> Bool {
+        let probe = open(url.path, O_RDONLY)
+        guard probe >= 0 else { return false }
+        defer { close(probe) }
+        return flock(probe, LOCK_EX | LOCK_NB) != 0
+    }
+}

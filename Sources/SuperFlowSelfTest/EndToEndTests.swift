@@ -618,7 +618,19 @@ private func e2eWords(_ text: String) -> String { text.lowercased().components(s
 /// process, on the child's folder) finds the audio, puts it in History, and "Retry transcript" gets the words back.
 @MainActor private func endToEndKilledMidDictation() {
     let base = SuperFlowPaths.support.appendingPathComponent("killed-dictation-\(UUID().uuidString)", isDirectory: true)
-    guard let line = CrashChild.runAndKill("dictation", base: base), let id = UUID(uuidString: line) else {
+    let line = CrashChild.runAndKill("dictation", base: base) { line in
+        // While the child still dictates, this process is a second running copy: its recovery must leave the file be.
+        let savedBase = SuperFlowPaths.base
+        SuperFlowPaths.base = base
+        defer { SuperFlowPaths.base = savedBase }
+        let services = E2EServices(speech: E2EScriptedSpeech(), models: E2EModels(), cleanup: TextCleaner())
+        defer { services.restore() }
+        services.coordinator.activate()
+        check(services.store.lastDictation == nil
+                  && FileManager.default.fileExists(atPath: SuperFlowPaths.dictationAudio.appendingPathComponent("\(line).pcm").path),
+              "a dictation another running copy is recording is left alone")
+    }
+    guard let line, let id = UUID(uuidString: line) else {
         check(false, "the child dictated and was killed"); return
     }
     let savedBase = SuperFlowPaths.base
