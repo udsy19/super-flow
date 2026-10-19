@@ -23,10 +23,12 @@ public struct ModelLayout: Sendable {
     /// The partial file, or the staging folder of a set.
     public var partial: URL { directory.appendingPathComponent(model.fileName + ".partial", isDirectory: isFolder) }
 
-    /// The top-level entries FluidAudio needs from the repository (bundles and files); empty for single files.
+    /// The entries FluidAudio needs from the repository (bundles and files, by path under the set's folder); empty for
+    /// single files.
     public var requiredEntries: Set<String> {
         guard isFolder else { return [] }
         switch model.kind {
+        case .asr where model.engine == "fluidaudio-nemotron": return ModelNames.NemotronStreaming.requiredModels
         case .asr: return ModelNames.ASR.requiredModelsV3(precision: .int8).union([ModelNames.ASR.vocabularyFile])
         case .diarization: return ModelNames.OfflineDiarizer.requiredModels
         case .echoCancel: return [ModelNames.LocalVQE.modelFile(variant: .v13, chunk: .realtime16ms)]
@@ -109,13 +111,15 @@ enum ModelSource {
         return [RemoteFile(url: rebased(url), path: model.fileName, size: model.bytes, digest: model.sha256.map(RemoteFile.Digest.sha256))]
     }
 
-    /// Lists a repository at its revision (following the API's `Link` pagination) and keeps the files under the
-    /// required entries, each with its size and hash.
+    /// Lists a repository (or its `subfolder`) at its revision (following the API's `Link` pagination) and keeps the
+    /// files under the required entries, each with its size and hash. Paths come back relative to the subfolder.
     static func files(of layout: ModelLayout, session: URLSession) async throws -> [RemoteFile] {
         guard let repository = layout.model.repository else { return [] }
         let revision = layout.model.revision ?? "main"
         let required = layout.requiredEntries
-        var next = URL(string: "\(base)/api/models/\(repository)/tree/\(revision)?recursive=true")
+        let prefix = layout.model.subfolder.map { $0 + "/" } ?? ""
+        let listed = layout.model.subfolder.map { "/" + ($0.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? $0) } ?? ""
+        var next = URL(string: "\(base)/api/models/\(repository)/tree/\(revision)\(listed)?recursive=true")
         var files: [RemoteFile] = []
         var pages = 0
         while let url = next, pages < 50 {
@@ -125,24 +129,30 @@ enum ModelSource {
             guard http.statusCode == 200 else { throw ModelError.http(http.statusCode) }
             guard let items = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { throw ModelError.http(http.statusCode) }
             for item in items where item["type"] as? String == "file" {
-                guard let path = item["path"] as? String, let top = path.split(separator: "/").first.map(String.init),
-                      required.contains(top) else { continue }
+                guard let fullPath = item["path"] as? String, fullPath.hasPrefix(prefix) else { continue }
+                let path = String(fullPath.dropFirst(prefix.count))
+                guard entry(of: path, in: required) != nil else { continue }
                 let lfs = item["lfs"] as? [String: Any]
                 let size = (lfs?["size"] as? NSNumber ?? item["size"] as? NSNumber)?.int64Value ?? -1
                 let digest: RemoteFile.Digest? = (lfs?["oid"] as? String).map { .sha256($0) }
                     ?? (item["oid"] as? String).map { .gitBlobSHA1($0) }
-                let encoded = path.split(separator: "/").map { $0.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? String($0) }
+                let encoded = fullPath.split(separator: "/").map { $0.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? String($0) }
                 guard let fileURL = URL(string: "\(base)/\(repository)/resolve/\(revision)/" + encoded.joined(separator: "/")) else { continue }
                 files.append(RemoteFile(url: fileURL, path: path, size: size, digest: digest))
             }
             next = nextPage(http)
         }
-        let found = Set(files.compactMap { $0.path.split(separator: "/").first.map(String.init) })
+        let found = Set(files.compactMap { entry(of: $0.path, in: required) })
         guard found == required else {
             Log.models.error("\(repository, privacy: .public) is missing \(required.subtracting(found).sorted(), privacy: .public)")
             throw ModelError.http(404)
         }
         return files
+    }
+
+    /// The required entry a file belongs to: the entry itself, or a file inside it ("encoder/encoder_int8.mlmodelc/…").
+    static func entry(of path: String, in required: Set<String>) -> String? {
+        required.first { path == $0 || path.hasPrefix($0 + "/") }
     }
 
     /// `Link: <https://…?cursor=…>; rel="next"`.

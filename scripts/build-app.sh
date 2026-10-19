@@ -30,6 +30,8 @@ cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 # Cue sounds (scripts/make-sounds.swift) and the bundled models (the Silero VAD, so VAD never downloads).
 cp -R "$ROOT/Resources/Sounds" "$APP/Contents/Resources/Sounds"
 cp -R "$ROOT/Resources/Models" "$APP/Contents/Resources/Models"
+# Licence texts models ask to ship with the app (the NVIDIA Open Model License for Nemotron).
+cp -R "$ROOT/Resources/Licenses" "$APP/Contents/Resources/Licenses"
 # SwiftPM resource bundles of modules that declare resources (FluidAudio's, loaded through Bundle.module's
 # Bundle.main.resourceURL lookup).
 find "$RES_BIN" -maxdepth 1 -name '*.bundle' -exec cp -R {} "$APP/Contents/Resources/" \;
@@ -107,7 +109,7 @@ for bin in "${BINARIES[@]}"; do
 done
 # Resources the app expects at runtime.
 for res in Resources/AppIcon.icns Resources/Sounds/dictationStart.wav Resources/Sounds/notificationError.wav \
-           Resources/Models/vad/ggml-silero-v6.2.0.bin Resources/FluidAudio_FluidAudio.bundle; do
+           Resources/Models/vad/ggml-silero-v6.2.0.bin Resources/FluidAudio_FluidAudio.bundle Resources/Licenses/NVIDIA-Open-Model-License.txt; do
   [ -e "$APP/Contents/$res" ] || fail "missing $res in the bundle"
 done
 # Info.plist: the executable name and every usage description the permissions need.

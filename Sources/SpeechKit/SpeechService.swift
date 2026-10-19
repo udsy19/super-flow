@@ -3,7 +3,9 @@ import Foundation
 import SuperFlowCore
 
 /// One speech service owns the engines (local-models.md §8.3): Parakeet for its 25 languages, whisper.cpp for the rest
-/// and on Intel, Silero VAD in front of both, and a priority gate so dictation jobs go before queued meeting jobs.
+/// and on Intel, Silero VAD in front of them, and a priority gate so dictation jobs go before queued meeting jobs. The user
+/// may choose Nemotron (live English, stt-second-engine.md §5) or Apple's engine on macOS 26 (§6) for dictation;
+/// meetings and the languages those don't cover stay on Parakeet or Whisper.
 ///
 /// Times in returned segments use the time base of the clips passed in (`AudioClip.startTime` plus the offset).
 @MainActor
@@ -13,6 +15,9 @@ public final class SpeechService: SpeechRecognizing {
     private let models: ModelManaging
     private var parakeet: (id: String, engine: ParakeetEngine)?
     private var whisper: (id: String, engine: WhisperEngine)?
+    private var nemotron: (id: String, engine: NemotronEngine)?
+    /// An `AppleSpeechEngine` (macOS 26 only) and the one language it was loaded for.
+    private var apple: (id: String, language: String, engine: AnyObject)?
     private var diarizer: (url: URL, engine: SpeakerDiarizer)?
     public private(set) var activeEngineID: String?
     private let gate = PriorityGate()
@@ -35,12 +40,20 @@ public final class SpeechService: SpeechRecognizing {
         memoryPressure = source
     }
 
+    /// Apple's engine counts only once chosen: using it may ask the OS for a download.
     public var availableEngines: [String] {
-        models.catalog.filter { $0.kind == .asr && models.state(of: $0.id) == .installed && Self.canRun($0) }.map(\.id)
+        models.catalog.filter {
+            $0.kind == .asr && models.state(of: $0.id) == .installed && Self.canRun($0) && (!$0.isBuiltIn || $0.id == Defaults[.asrModelID])
+        }.map(\.id)
     }
 
     static func canRun(_ model: ModelDescriptor) -> Bool {
-        model.engine == "whisper" || (model.engine == "fluidaudio" && Machine.isAppleSilicon)
+        switch model.engine {
+        case "whisper": true
+        case "fluidaudio", "fluidaudio-nemotron": Machine.isAppleSilicon
+        case "apple": AppleSpeech.isSupported
+        default: false
+        }
     }
 
     // MARK: Engines
@@ -49,9 +62,18 @@ public final class SpeechService: SpeechRecognizing {
         guard let model = models.catalog.first(where: { $0.id == modelID }), model.kind == .asr else {
             throw SpeechError.modelNotInstalled(modelID)
         }
-        guard Self.canRun(model) else { throw SpeechError.engineUnavailable("\(model.name) needs a Mac with Apple silicon.") }
+        guard Self.canRun(model) else {
+            throw SpeechError.engineUnavailable(model.isBuiltIn ? "\(model.name) needs macOS 26." : "\(model.name) needs a Mac with Apple silicon.")
+        }
+        if model.isBuiltIn {
+            try await prepareApple(model)
+            activeEngineID = modelID
+            Log.speech.info("Prepared \(modelID, privacy: .public)")
+            return
+        }
         guard let url = models.location(of: modelID) else { throw SpeechError.modelNotInstalled(modelID) }
-        if model.engine == "fluidaudio" {
+        switch model.engine {
+        case "fluidaudio":
             if parakeet?.id != modelID {
                 let engine = ParakeetEngine(directory: url)
                 try await engine.load()
@@ -60,27 +82,55 @@ public final class SpeechService: SpeechRecognizing {
                 parakeet = (modelID, engine)
                 await previous?.engine.unload()
             }
-        } else if whisper?.id != modelID {
-            let engine = WhisperEngine(modelURL: url)
-            try await engine.load()
-            await engine.warm()
-            let previous = whisper
-            whisper = (modelID, engine)
-            await previous?.engine.unload()
+        case "fluidaudio-nemotron":
+            if nemotron?.id != modelID {
+                let engine = NemotronEngine(directory: url)
+                try await engine.load()
+                await engine.warm()
+                let previous = nemotron
+                nemotron = (modelID, engine)
+                await previous?.engine.unload()
+            }
+        default:
+            if whisper?.id != modelID {
+                let engine = WhisperEngine(modelURL: url)
+                try await engine.load()
+                await engine.warm()
+                let previous = whisper
+                whisper = (modelID, engine)
+                await previous?.engine.unload()
+            }
         }
         activeEngineID = modelID
         Log.speech.info("Prepared \(modelID, privacy: .public)")
     }
 
+    /// Apple's engine for the one dictation language it supports; the OS installs that language's assets if needed.
+    private func prepareApple(_ model: ModelDescriptor) async throws {
+        guard #available(macOS 26, *) else { throw SpeechError.engineUnavailable("\(model.name) needs macOS 26.") }
+        let languages = SpeechLanguages.requested(selected: Defaults[.selectedLanguages], autoDetect: Defaults[.autoDetectLanguage])
+        guard languages.count == 1, let language = languages.first, let locale = await AppleSpeechEngine.locale(for: language) else {
+            throw SpeechError.engineUnavailable("Apple's engine needs one dictation language it supports.")
+        }
+        if apple?.id == model.id, apple?.language == language { return }
+        let engine = AppleSpeechEngine(locale: locale)
+        try await engine.load()
+        await engine.warm()
+        apple = (model.id, language, engine)
+    }
+
     public func unload() {
-        let engines = (parakeet?.engine, whisper?.engine)
+        let engines = (parakeet?.engine, whisper?.engine, nemotron?.engine)
         parakeet = nil
         whisper = nil
+        nemotron = nil
+        apple = nil
         diarizer = nil
         activeEngineID = nil
         Task {
             await engines.0?.unload()
             await engines.1?.unload()
+            await engines.2?.unload()
         }
     }
 
@@ -88,7 +138,7 @@ public final class SpeechService: SpeechRecognizing {
     /// runs. A model that won't load (a damaged file, too little memory) doesn't stop dictation while another installed
     /// one does; the first error is thrown only when none loads.
     private func ensureEngine() async throws {
-        guard parakeet == nil, whisper == nil else { return }
+        guard parakeet == nil, whisper == nil, nemotron == nil, apple == nil else { return }
         let installed = availableEngines
         var tried: Set<String> = []
         var firstError: Error?
@@ -112,19 +162,43 @@ public final class SpeechService: SpeechRecognizing {
     private enum Engine {
         case parakeet(ParakeetEngine)
         case whisper(WhisperEngine)
+        case nemotron(NemotronEngine)
+        /// An `AppleSpeechEngine`.
+        case apple(AnyObject)
     }
 
-    /// Parakeet when it covers the requested languages, else the multilingual Whisper fallback (loaded on first use),
-    /// else whatever is loaded.
-    private func engine(for languages: [String]) async throws -> Engine {
+    /// For dictation, the chosen Nemotron or Apple engine when it covers the languages (Nemotron: English only; Apple: the
+    /// one language it was loaded for). Otherwise, and for meetings, Parakeet when it covers the requested languages,
+    /// else the multilingual Whisper fallback (loaded on first use), else whatever is loaded.
+    private func engine(for languages: [String], priority: SpeechPriority) async throws -> Engine {
         try await ensureEngine()
+        if priority == .dictation {
+            if let nemotron, activeEngineID == nemotron.id, Self.isEnglishOnly(languages) { return .nemotron(nemotron.engine) }
+            if let apple, activeEngineID == apple.id, languages == [apple.language] { return .apple(apple.engine) }
+        }
         let parakeetFits = SupportedLanguages.parakeetCovers(languages)
+        if parakeet == nil, whisper == nil, parakeetFits { try await loadParakeetBeside() }
         if let parakeet, parakeetFits, activeEngineID == parakeet.id || whisper == nil { return .parakeet(parakeet.engine) }
         if let whisper, activeEngineID == whisper.id || !parakeetFits { return .whisper(whisper.engine) }
         if !parakeetFits, let fallback = try await loadFallbackWhisper() { return .whisper(fallback) }
         if let parakeet { return .parakeet(parakeet.engine) }
         if let whisper { return .whisper(whisper.engine) }
+        if let nemotron { return .nemotron(nemotron.engine) }
+        if let apple { return .apple(apple.engine) }
         throw SpeechError.engineUnavailable("No speech engine is loaded.")
+    }
+
+    static func isEnglishOnly(_ languages: [String]) -> Bool { !languages.isEmpty && languages.allSatisfy { $0 == "en" } }
+
+    /// Parakeet next to a chosen Nemotron or Apple engine, for meetings and the languages those don't cover.
+    private func loadParakeetBeside() async throws {
+        guard let model = models.catalog.first(where: { $0.engine == "fluidaudio" && $0.kind == .asr && models.state(of: $0.id) == .installed }),
+              Self.canRun(model), let url = models.location(of: model.id) else { return }
+        let engine = ParakeetEngine(directory: url)
+        try await engine.load()
+        await engine.warm()
+        parakeet = (model.id, engine)
+        Log.speech.info("Loaded \(model.id, privacy: .public) beside the chosen engine")
     }
 
     /// The multilingual fallback (`fallbackASRModelID`, else the largest installed Whisper model), kept loaded beside Parakeet.
@@ -147,6 +221,7 @@ public final class SpeechService: SpeechRecognizing {
         if !installed {
             if parakeet?.id == id { let old = parakeet?.engine; parakeet = nil; Task { await old?.unload() } }
             if whisper?.id == id { let old = whisper?.engine; whisper = nil; Task { await old?.unload() } }
+            if nemotron?.id == id { let old = nemotron?.engine; nemotron = nil; Task { await old?.unload() } }
             if activeEngineID == id { activeEngineID = nil }
             if id == ModelCatalog.diarization.id { diarizer = nil }
         } else if id == Defaults[.asrModelID], activeEngineID != nil, activeEngineID != id,
@@ -186,7 +261,7 @@ public final class SpeechService: SpeechRecognizing {
         try Task.checkCancellation()
         let languages = options.languages.map(SupportedLanguages.base)
         var transcript: Transcript
-        switch try await engine(for: languages) {
+        switch try await engine(for: languages, priority: priority) {
         case .parakeet(let engine):
             transcript = try await engine.transcribe(clip, language: languages.count == 1 ? languages[0] : nil)
             let identified = TextLanguage.identify(transcript.text, among: languages.isEmpty ? SupportedLanguages.parakeet : languages)
@@ -207,6 +282,15 @@ public final class SpeechService: SpeechRecognizing {
             }
             transcript.text = text
             transcript.languageConfidence = language?.1 ?? 1
+        case .nemotron(let engine):
+            transcript = try await engine.transcribe(clip)
+            transcript.text = TranscriptGuard.accept(transcript.text, speechSeconds: speechSeconds, quiet: quiet)
+        case .apple(let box):
+            guard #available(macOS 26, *), let engine = box as? AppleSpeechEngine else {
+                throw SpeechError.engineUnavailable("Apple's engine needs macOS 26.")
+            }
+            transcript = try await engine.transcribe(clip, vocabulary: options.vocabulary)
+            transcript.text = TranscriptGuard.accept(transcript.text, speechSeconds: speechSeconds, quiet: quiet)
         }
         if transcript.text.isEmpty { transcript.segments = [] }
         else if transcript.segments.count == 1 { transcript.segments[0].text = transcript.text }
@@ -217,6 +301,15 @@ public final class SpeechService: SpeechRecognizing {
         -> AsyncThrowingStream<TranscriptionEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task { @MainActor in
+                let languages = options.languages.map(SupportedLanguages.base)
+                if priority == .dictation, case .nemotron(let engine)? = try? await self.engine(for: languages, priority: priority) {
+                    do {
+                        try await self.live(audio, on: engine, options: options, continuation: continuation)
+                    } catch {
+                        continuation.finish(throwing: error is CancellationError ? SpeechError.failed("Cancelled") : error)
+                    }
+                    return
+                }
                 let session = IncrementalSession(vad: self.makeVAD(), parameters: priority == .meeting ? .meeting : .dictation,
                                                  channel: options.channel)
                 do {
@@ -246,6 +339,48 @@ public final class SpeechService: SpeechRecognizing {
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    /// Live dictation on Nemotron (stt-second-engine.md §5.3): every clip goes straight into the model, the text so far
+    /// comes back as partials (about once per 1.12 s chunk), and key-up decodes only the last chunk. Silero still decides
+    /// whether anything was said, over the whole stream, as for the other engines.
+    private func live(_ audio: AsyncStream<AudioClip>, on engine: NemotronEngine, options: TranscriptionOptions,
+                      continuation: AsyncThrowingStream<TranscriptionEvent, Error>.Continuation) async throws {
+        var speech = LiveSpeechTracker(vad: makeVAD())
+        var origin: TimeInterval?
+        var partial = ""
+        try await gated { try await engine.begin() }
+        for await clip in audio {
+            try Task.checkCancellation()
+            if origin == nil { origin = clip.startTime }
+            speech.append(clip.samples)
+            let text = try await gated { try await engine.append(clip.samples) }
+            if !text.isEmpty, text != partial {
+                partial = text
+                continuation.yield(.partial(text))
+            }
+        }
+        try Task.checkCancellation()
+        let heard = try await gated { try await engine.end() }
+        let regions = speech.finish()
+        let speechSamples = regions.reduce(0) { $0 + $1.count }
+        guard let first = regions.first, let last = regions.last,
+              speechSamples >= Int(VADParameters.dictation.minimumSpeech * Double(AudioClip.sampleRate)) else { throw SpeechError.noSpeech }
+        let text = TranscriptGuard.accept(heard, speechSeconds: Double(speechSamples) / Double(AudioClip.sampleRate), quiet: speech.isQuiet)
+        guard !text.isEmpty else { throw SpeechError.noSpeech }
+        let start = (origin ?? 0) + Double(first.lowerBound) / Double(AudioClip.sampleRate)
+        let end = (origin ?? 0) + Double(last.upperBound) / Double(AudioClip.sampleRate)
+        let segment = TranscriptSegment(channel: options.channel, start: start, end: end, text: text)
+        continuation.yield(.segment(segment))
+        continuation.yield(.final(Transcript(text: text, language: "en", segments: [segment])))
+        continuation.finish()
+    }
+
+    /// One engine call behind the dictation slot of the priority gate.
+    private func gated<T>(_ work: () async throws -> T) async throws -> T {
+        await gate.acquire(.dictation)
+        defer { gate.release() }
+        return try await work()
     }
 
     private func segment(_ session: IncrementalSession, _ region: Range<Int>, options: TranscriptionOptions,
@@ -421,5 +556,51 @@ final class IncrementalSession {
         guard !transcript.text.isEmpty else { return }
         segments.append(TranscriptSegment(channel: channel, start: time(of: region.lowerBound), end: time(of: region.upperBound), text: transcript.text))
         confidences.append(transcript.confidence)
+    }
+}
+
+/// Speech regions and loudness of a live stream, scored window by window so nothing but the open window is kept.
+struct LiveSpeechTracker {
+    private let vad: SpeechProbabilityModel
+    private var segmenter: StreamingSegmenter
+    private var pending: [Float] = []
+    private var scored = 0
+    private var regions: [Range<Int>] = []
+    private var energy: Double = 0
+    private var voicedSamples = 0
+
+    init(vad: SpeechProbabilityModel) {
+        self.vad = vad
+        segmenter = StreamingSegmenter(window: vad.window, parameters: .dictation)
+    }
+
+    mutating func append(_ samples: [Float]) {
+        pending += samples
+        let whole = pending.count / vad.window * vad.window
+        guard whole > 0 else { return }
+        score(Array(pending[..<whole]))
+        pending.removeFirst(whole)
+    }
+
+    /// Closes the stream; returns the speech regions in stream samples.
+    mutating func finish() -> [Range<Int>] {
+        let total = scored + pending.count
+        if !pending.isEmpty { score(pending + [Float](repeating: 0, count: vad.window - pending.count)) }
+        pending = []
+        if let open = segmenter.finish(totalSamples: total) { regions.append(open) }
+        return regions
+    }
+
+    /// The speech is under −45 dBFS on average (the phantom-text check, `TranscriptGuard.isQuiet`).
+    var isQuiet: Bool { voicedSamples == 0 || 10 * log10(energy / Double(voicedSamples) + 1e-12) < -45 }
+
+    private mutating func score(_ samples: [Float]) {
+        let probabilities = vad.probabilities(samples, continuing: scored > 0)
+        for (k, p) in probabilities.enumerated() where p >= VADParameters.dictation.releaseThreshold {
+            for sample in samples[k * vad.window..<min(samples.count, (k + 1) * vad.window)] { energy += Double(sample * sample) }
+            voicedSamples += vad.window
+        }
+        regions += segmenter.push(probabilities)
+        scored += samples.count
     }
 }

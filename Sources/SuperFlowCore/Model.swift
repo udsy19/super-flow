@@ -612,7 +612,8 @@ public struct ModelDescriptor: Codable, Hashable, Identifiable, Sendable {
     public var id: String
     public var kind: ModelKind
     public var name: String
-    /// Which engine loads it: "whisper", "llama", "fluidaudio".
+    /// Which engine loads it: "whisper", "llama", "fluidaudio", "fluidaudio-nemotron", or "apple" (part of macOS 26,
+    /// nothing to download).
     public var engine: String
     public var bytes: Int64
     /// Pinned download URL (a Hugging Face `resolve/<revision>/` URL); nil for Core ML sets FluidAudio fetches itself.
@@ -622,6 +623,9 @@ public struct ModelDescriptor: Codable, Hashable, Identifiable, Sendable {
     /// Hugging Face repo and revision for Core ML folders.
     public var repository: String?
     public var revision: String?
+    /// The folder of `repository` that holds the set, when the repository has several ("nemotron_coreml_1120ms"); its
+    /// files install without the prefix.
+    public var subfolder: String?
     public var licence: String
     /// Text shown in About › Licences (CC-BY attribution, "Built with…").
     public var attribution: String
@@ -631,12 +635,15 @@ public struct ModelDescriptor: Codable, Hashable, Identifiable, Sendable {
     public var minRAM: Int64
 
     public init(id: String, kind: ModelKind, name: String, engine: String, bytes: Int64, url: URL? = nil, sha256: String? = nil,
-                repository: String? = nil, revision: String? = nil, licence: String, attribution: String = "", languages: [String] = ["auto"],
-                minRAM: Int64 = 0) {
+                repository: String? = nil, revision: String? = nil, subfolder: String? = nil, licence: String, attribution: String = "",
+                languages: [String] = ["auto"], minRAM: Int64 = 0) {
         self.id = id; self.kind = kind; self.name = name; self.engine = engine; self.bytes = bytes; self.url = url; self.sha256 = sha256
-        self.repository = repository; self.revision = revision; self.licence = licence; self.attribution = attribution
-        self.languages = languages; self.minRAM = minRAM
+        self.repository = repository; self.revision = revision; self.subfolder = subfolder; self.licence = licence
+        self.attribution = attribution; self.languages = languages; self.minRAM = minRAM
     }
+
+    /// Part of the OS: never downloaded, never listed as a download.
+    public var isBuiltIn: Bool { engine == "apple" }
 
     /// The file or folder name under `SuperFlowPaths.models(kind)`.
     public var fileName: String { url?.lastPathComponent ?? id }

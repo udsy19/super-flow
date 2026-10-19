@@ -78,12 +78,18 @@ public final class ModelManager: ModelManaging {
         return configuration
     }
 
-    /// What the automatic queue installs on this Mac: the preset in `AutoDownloadPolicy` order, the Silero VAD first
+    /// What the automatic queue installs on this Mac: the preset in `AutoDownloadPolicy` order, with the dictation engine
+    /// and cleanup model chosen in Settings › Models first in their groups (Nemotron is in no preset), the Silero VAD first
     /// when the app bundle carries no copy, and the multilingual Whisper fallback when a selected language (or
     /// auto-detect) is outside Parakeet's 25 (local-models.md §9.2, "Any, on demand").
     static func automaticPlan() -> [ModelDescriptor] {
         let preset = ModelCatalog.preset(isAppleSilicon: Machine.isAppleSilicon, memoryBytes: Machine.memoryBytes)
         var plan = AutoDownloadPolicy.order(for: preset)
+        for chosen in [Defaults[.cleanupModelID], Defaults[.asrModelID]].compactMap({ $0.flatMap(ModelCatalog.descriptor) })
+        where !chosen.isBuiltIn && SpeechService.canRun(chosen) || chosen.kind == .llm {
+            plan.removeAll { $0.id == chosen.id }
+            plan.insert(chosen, at: plan.firstIndex { $0.kind == chosen.kind } ?? (chosen.kind == .asr ? 0 : plan.count))
+        }
         if bundledCopy(of: ModelCatalog.sileroVAD) == nil { plan.insert(ModelCatalog.sileroVAD, at: 0) }
         let languages = SpeechLanguages.requested(selected: Defaults[.selectedLanguages], autoDetect: Defaults[.autoDetectLanguage])
         if preset.dictation.contains(where: { $0.engine == "fluidaudio" && $0.kind == .asr }), !SupportedLanguages.parakeetCovers(languages),
@@ -109,6 +115,7 @@ public final class ModelManager: ModelManaging {
 
     public func state(of id: String) -> ModelState {
         guard let model = descriptor(id) else { return .notDownloaded }
+        if model.isBuiltIn { return AppleSpeech.isSupported ? .installed : .notDownloaded }
         if transfer?.id == id { return .downloading(fraction: fraction(id, model)) }
         let layout = layout(model)
         if layout.isInstalled() { return .installed }
@@ -152,7 +159,7 @@ public final class ModelManager: ModelManaging {
             continuation.finish(throwing: ModelError.unknownModel(id))
             return stream
         }
-        if transfer?.id != id, layout(model).isInstalled() {
+        if transfer?.id != id, layout(model).isInstalled() || model.isBuiltIn {
             continuation.finish()
             return stream
         }
@@ -234,7 +241,9 @@ public final class ModelManager: ModelManaging {
             guard missing.isEmpty else { throw ModelError.checksumMismatch }
             try fm.createDirectory(at: layout.partial, withIntermediateDirectories: true)
             for entry in layout.requiredEntries {
-                try fm.copyItem(at: source.appendingPathComponent(entry), to: layout.partial.appendingPathComponent(entry))
+                let target = layout.partial.appendingPathComponent(entry)
+                try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try fm.copyItem(at: source.appendingPathComponent(entry), to: target)
             }
         } else {
             var digest = StreamingDigest(layout.model.sha256.map(RemoteFile.Digest.sha256), size: layout.model.bytes)
@@ -262,7 +271,7 @@ public final class ModelManager: ModelManaging {
             automaticStarted = true
             let keys: Set<String> = [Defaults.Keys.autoDownloadModels.name, Defaults.Keys.modelMirrorURL.name,
                                      Defaults.Keys.selectedLanguages.name, Defaults.Keys.autoDetectLanguage.name,
-                                     Defaults.Keys.fallbackASRModelID.name]
+                                     Defaults.Keys.fallbackASRModelID.name, Defaults.Keys.asrModelID.name, Defaults.Keys.cleanupModelID.name]
             settingsObserver = Defaults.changes.filter { keys.contains($0) }
                 .receive(on: DispatchQueue.main)
                 .sink { [weak self] _ in MainActor.assumeIsolated { self?.settingsChanged() } }

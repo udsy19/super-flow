@@ -129,8 +129,7 @@ public extension Defaults.Keys {
     /// nil = rules only.
     static let cleanupModelID = Key<String?>("cleanupModelID", default: ModelCatalog.qwen35_2B.id)
     static let notesModelID = Key<String>("notesModelID", default: ModelCatalog.qwen35_4B.id)
-    /// Use Apple's on-device engines on macOS 26 when available (SpeechTranscriber, Foundation Models).
-    static let useAppleSpeech = Key<Bool>("useAppleSpeech", default: false)
+    /// Use Apple's Foundation Models on macOS 26 when available. (Apple's speech engine is an `asrModelID` choice.)
     static let useAppleIntelligence = Key<Bool>("useAppleIntelligence", default: false)
     /// Owner decision: models download automatically in the background after install (`AutoDownloadPolicy`).
     static let autoDownloadModels = Key<Bool>("autoDownloadModels", default: true)

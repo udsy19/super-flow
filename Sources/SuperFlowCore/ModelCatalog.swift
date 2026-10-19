@@ -22,6 +22,23 @@ public enum ModelCatalog {
                     "sk", "sl", "es", "sv", "ru", "uk"],
         minRAM: 1 * gib)
 
+    /// Live English dictation (stt-second-engine.md): cache-aware streaming RNNT on the ANE, text every 1.12 s while the
+    /// key is held, so key-up only finishes the last chunk. Opt-in from Settings › Models; in no preset.
+    public static let nemotronStreamingEN = ModelDescriptor(
+        id: "nemotron-speech-streaming-en-0.6b-1120ms", kind: .asr, name: "Nemotron Speech Streaming 0.6B (English)",
+        engine: "fluidaudio-nemotron", bytes: 626_803_815, repository: "FluidInference/nemotron-speech-streaming-en-0.6b-coreml",
+        revision: "e673531caa6d25ab7baf5a8c14c9b99ba1551838", subfolder: "nemotron_coreml_1120ms", licence: "NVIDIA Open Model License",
+        attribution: "NVIDIA Nemotron Speech Streaming EN 0.6B. Licensed by NVIDIA Corporation under the NVIDIA Open Model License; "
+            + "Core ML conversion by Fluid Inference (modified).",
+        languages: ["en"], minRAM: 1 * gib)
+
+    /// Apple's SpeechAnalyzer on macOS 26: nothing for Super Flow to download (the OS manages the model), 30 locales of
+    /// 10 languages, one at a time, no detection (stt-second-engine.md §6). Offered only on macOS 26.
+    public static let appleSpeech = ModelDescriptor(
+        id: "apple-speech-transcriber", kind: .asr, name: "Apple on-device (macOS 26)", engine: "apple", bytes: 0,
+        licence: "Part of macOS", attribution: "Apple SpeechAnalyzer and SpeechTranscriber, part of macOS 26.",
+        languages: ["en", "de", "es", "fr", "it", "ja", "ko", "pt", "yue", "zh"])
+
     /// Multilingual fallback (99 languages) and the Intel engine; downloaded on demand.
     public static let whisperLargeV3Turbo = ModelDescriptor(
         id: "ggml-large-v3-turbo-q5_0", kind: .asr, name: "Whisper large-v3-turbo (q5_0)", engine: "whisper",
@@ -97,11 +114,24 @@ public enum ModelCatalog {
         attribution: "LocalVQE by Fluid Inference (Apache-2.0).", minRAM: 128 * 1_048_576)
 
     public static let all: [ModelDescriptor] = [
-        parakeetV3, whisperLargeV3Turbo, whisperSmall, whisperBase, sileroVAD, qwen35_2B, qwen35_0_8B, qwen35_4B, qwen3_4BInstruct,
-        diarization, localVQE,
+        parakeetV3, nemotronStreamingEN, appleSpeech, whisperLargeV3Turbo, whisperSmall, whisperBase, sileroVAD, qwen35_2B, qwen35_0_8B,
+        qwen35_4B, qwen3_4BInstruct, diarization, localVQE,
     ]
 
     public static func descriptor(_ id: String) -> ModelDescriptor? { all.first { $0.id == id } }
+
+    /// The dictation engines Settings › Models offers on this Mac: Parakeet (the default) and the live English Nemotron on
+    /// Apple silicon, Apple's own on macOS 26; Intel Macs run Whisper and have no choice to make.
+    public static func dictationEngines(isAppleSilicon: Bool, hasAppleSpeech: Bool) -> [ModelDescriptor] {
+        guard isAppleSilicon else { return [] }
+        return [parakeetV3, nemotronStreamingEN] + (hasAppleSpeech ? [appleSpeech] : [])
+    }
+
+    /// The cleanup models Settings › Models offers (cleanup-quality.md §7): Qwen3.5-2B, the default everywhere, and the
+    /// 4B "best quality" model on Macs with 24 GB or more, where it is already downloaded for meeting notes.
+    public static func cleanupModels(isAppleSilicon: Bool, memoryBytes: Int64) -> [ModelDescriptor] {
+        isAppleSilicon && memoryBytes >= 24 * gib ? [qwen35_2B, qwen35_4B] : []
+    }
 
     /// The models the dictation and meetings presets install (local-models.md §9.2).
     public struct Preset: Equatable, Sendable {

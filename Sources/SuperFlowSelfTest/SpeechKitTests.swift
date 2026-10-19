@@ -2,6 +2,7 @@ import AVFoundation
 import Combine
 import CryptoKit
 import Foundation
+import Speech
 import SpeechKit
 import SuperFlowCore
 
@@ -19,10 +20,13 @@ func registerSpeechKitTests() {
     SelfTest.cases.append(("SpeechKit.downloads", { MainActor.assumeIsolated { speechDownloads() } }))
     SelfTest.cases.append(("SpeechKit.pauseAndResume", { MainActor.assumeIsolated { speechPauseResume() } }))
     SelfTest.cases.append(("SpeechKit.folderDownloadViaMirror", { MainActor.assumeIsolated { speechFolderDownload() } }))
+    SelfTest.cases.append(("SpeechKit.subfolderDownload", { MainActor.assumeIsolated { speechSubfolderDownload() } }))
     SelfTest.cases.append(("SpeechKit.automaticQueue", { MainActor.assumeIsolated { speechAutomaticQueue() } }))
     SelfTest.cases.append(("SpeechKit.importAndDelete", { MainActor.assumeIsolated { speechImportDelete() } }))
     SelfTest.cases.append(("SpeechKit.sileroVAD", { MainActor.assumeIsolated { speechSilero() } }))
     SelfTest.cases.append(("SpeechKit.parakeetFixtures", { MainActor.assumeIsolated { speechParakeet() } }))
+    SelfTest.cases.append(("SpeechKit.nemotronFixtures", { MainActor.assumeIsolated { speechNemotron() } }))
+    SelfTest.cases.append(("SpeechKit.appleSpeechFixtures", { MainActor.assumeIsolated { speechApple() } }))
     SelfTest.cases.append(("SpeechKit.whisperFixtures", { MainActor.assumeIsolated { speechWhisper() } }))
     SelfTest.cases.append(("SpeechKit.diarizationFixture", { MainActor.assumeIsolated { speechDiarization() } }))
 }
@@ -272,6 +276,11 @@ private func speechModelLayout() {
                                        "parakeet_vocab.json"], "Parakeet needs exactly what FluidAudio loads (\(parakeet.requiredEntries.sorted()))")
     check(ModelLayout(ModelCatalog.diarization, root: root).requiredEntries.contains("plda-parameters.json"), "diarization includes the PLDA file")
     check(ModelLayout(ModelCatalog.localVQE, root: root).requiredEntries == ["localvqe-v1.3-4.8M-16ms.mlmodelc"], "LocalVQE v1.3, 16 ms")
+    let nemotron = ModelLayout(ModelCatalog.nemotronStreamingEN, root: root)
+    check(nemotron.isFolder && nemotron.final.path == "/tmp/models-root/asr/nemotron-speech-streaming-en-0.6b-1120ms"
+          && nemotron.requiredEntries == ["preprocessor.mlmodelc", "encoder/encoder_int8.mlmodelc", "decoder.mlmodelc", "joint.mlmodelc",
+                                          "decoder_joint.mlmodelc", "tokenizer.json", "metadata.json"],
+          "Nemotron installs the 1120 ms tier's files, nested encoder included (\(nemotron.requiredEntries.sorted()))")
     check(!file.isInstalled() && !parakeet.isInstalled(), "nothing installed in an empty root")
 }
 
@@ -404,6 +413,42 @@ private func speechGate() {
     check(MockModelServer.ranges(for: base + "Embedding.mlmodelc/weights/weight.bin").last == "bytes=5000-", "a dropped file resumed where it stopped")
 }
 
+/// A set kept in one folder of a repository that holds several (Nemotron's chunk tiers): only that folder is listed and
+/// fetched, nested entries included, and its files install without the folder prefix.
+@MainActor private func speechSubfolderDownload() {
+    Defaults[.modelMirrorURL] = "https://mirror.test"
+    defer { Defaults.reset(.modelMirrorURL) }
+    let model = ModelDescriptor(id: "test-nemotron", kind: .asr, name: "Test Nemotron", engine: "fluidaudio-nemotron", bytes: 1_000,
+                                repository: "acme/nemo-coreml", revision: "main", subfolder: "tier_a", licence: "NVIDIA Open Model License")
+    let base = "https://mirror.test/acme/nemo-coreml/resolve/main/"
+    var entries: [[String: Any]] = []
+    var expected: [String: Data] = [:]
+    for (i, entry) in ModelLayout(model, root: SuperFlowPaths.models).requiredEntries.sorted().enumerated() {
+        let paths = entry.hasSuffix(".mlmodelc") ? [entry + "/model.mil", entry + "/weights/weight.bin"] : [entry]
+        for (k, path) in paths.enumerated() {
+            let data = pattern(700 + 50 * i + k, seed: UInt8(i * 2 + k))
+            expected[path] = data
+            entries.append(["type": "file", "path": "tier_a/" + path, "size": data.count, "oid": "x", "lfs": ["oid": data.sha256, "size": data.count]])
+            MockModelServer.serve(base + "tier_a/" + path, .init(data: data))
+        }
+    }
+    entries.append(["type": "file", "path": "tier_b/metadata.json", "size": 2, "oid": Data("{}".utf8).gitBlobSHA1])
+    MockModelServer.serve("https://mirror.test/api/models/acme/nemo-coreml/tree/main/tier_a?recursive=true",
+                          .init(data: try! JSONSerialization.data(withJSONObject: entries)))
+    let (manager, root) = testManager([model])
+    let result = drain(manager.download(model.id))
+    check(result.error == nil, "the tier downloads (\(String(describing: result.error)))")
+    let folder = root.appendingPathComponent("asr/test-nemotron")
+    check(manager.state(of: model.id) == .installed && manager.location(of: model.id) == folder, "installed as a folder")
+    check(expected.allSatisfy { (try? Data(contentsOf: folder.appendingPathComponent($0.key))) == $0.value }, "every file is in place, without the tier prefix")
+    check(!FileManager.default.fileExists(atPath: folder.appendingPathComponent("tier_b").path), "other tiers are left alone")
+
+    // A folder set with nested entries imports too.
+    let (other, _) = testManager([model])
+    check(complete(60, { try await other.importModel(model.id, from: folder) }).map { if case .success = $0 { true } else { false } } == true
+          && other.state(of: model.id) == .installed, "a nested set imports")
+}
+
 @MainActor private func speechAutomaticQueue() {
     let slowData = pattern(300_000, seed: 21), fastData = pattern(20_000, seed: 22), lateData = pattern(30_000, seed: 23)
     let slow = testModel("auto-slow", data: slowData), fast = testModel("auto-fast", data: fastData), late = testModel("auto-late", data: lateData)
@@ -511,6 +556,7 @@ func devModel(_ names: String...) -> URL? {
 @MainActor func devManager() -> ModelManager? {
     let links: [(ModelDescriptor, URL?)] = [
         (ModelCatalog.parakeetV3, devModel("parakeet-tdt-0.6b-v3")),
+        (ModelCatalog.nemotronStreamingEN, devModel(ModelCatalog.nemotronStreamingEN.id, "nemotron_coreml_1120ms", "nemotron-streaming/1120ms")),
         (ModelCatalog.whisperBase, devModel(ModelCatalog.whisperBase.fileName)),
         (ModelCatalog.sileroVAD, devModel(ModelCatalog.sileroVAD.fileName)),
         (ModelCatalog.diarization, devModel("speaker-diarization", ModelCatalog.diarization.id)),
@@ -639,6 +685,130 @@ private func words(_ text: String) -> String { text.lowercased().components(sepa
     check(final?.segments.count == segments.count, "the final carries the segments")
     service.unload()
     check(service.activeEngineID == nil, "unload")
+}
+
+/// Word errors between a reference and recognised text (lower case, letters only), by edit distance over words.
+private func wordErrors(_ reference: String, _ heard: String) -> Int {
+    var symbols: [Substring: Character] = [:]
+    func encode(_ text: String) -> String {
+        String(words(text).split(separator: " ").map { word -> Character in
+            if let symbol = symbols[word] { return symbol }
+            let symbol = Character(UnicodeScalar(0x4E00 + symbols.count)!)
+            symbols[word] = symbol
+            return symbol
+        })
+    }
+    return TextDistance.edits(encode(reference), encode(heard))
+}
+
+/// Streams a clip as dictation does (40 ms frames, in real time) and returns the partials, the final transcript or the
+/// error, and the tail: the time from the last frame to the final text, i.e. what the user waits after key-up.
+@MainActor private func dictate(_ samples: [Float], service: SpeechService, options: TranscriptionOptions)
+    -> (partials: [String], final: Result<Transcript, Error>, tail: TimeInterval) {
+    let (clips, input) = AsyncStream<AudioClip>.makeStream()
+    let events = service.transcribeIncrementally(clips, options: options, priority: .dictation)
+    var partials: [String] = []
+    var lastFrameAt = Date()
+    let feeder = Task { @MainActor in
+        var offset = 0
+        while offset < samples.count {
+            let end = min(offset + 640, samples.count)
+            input.yield(AudioClip(samples: Array(samples[offset..<end]), startTime: Double(offset) / 16_000))
+            offset = end
+            try? await Task.sleep(nanoseconds: 40_000_000)
+        }
+        lastFrameAt = Date()
+        input.finish()
+    }
+    let result = complete(180) { () -> Transcript in
+        var final: Transcript?
+        for try await event in events {
+            switch event {
+            case .partial(let text): partials.append(text)
+            case .final(let transcript): final = transcript
+            case .segment: break
+            }
+        }
+        guard let final else { throw SpeechError.noSpeech }
+        return final
+    }
+    let tail = Date().timeIntervalSince(lastFrameAt)
+    feeder.cancel()
+    return (partials, result ?? .failure(URLError(.timedOut)), tail)
+}
+
+@MainActor private func speechNemotron() {
+    let id = ModelCatalog.nemotronStreamingEN.id
+    guard Machine.isAppleSilicon, let manager = devManager(), manager.state(of: id) == .installed else {
+        print("  (skipped: no Nemotron 1120 ms folder in the dev model folders)"); return
+    }
+    let references = ["Please send the quarterly report to Dana by Friday.", "Could you book a quiet table near the window tonight?"]
+    // 300 ms of lead-in, as the microphone's pre-roll gives.
+    guard let a = spoken(references[0], voice: "Samantha", padding: 0.3), let b = spoken(references[1], voice: "Daniel", padding: 0.3) else {
+        print("  (skipped: no speech synthesiser)"); return
+    }
+    Defaults[.asrModelID] = id
+    defer { Defaults.reset(.asrModelID) }
+    let service = SpeechService(models: manager)
+    let started = Date()
+    guard case .success? = complete(600, { try await service.prepare(modelID: id) }) else { check(false, "Nemotron prepares from the Models folder"); return }
+    print("  nemotron: prepared (load + warm) in \(String(format: "%.2f", Date().timeIntervalSince(started))) s")
+    check(service.activeEngineID == id, "Nemotron is the active engine")
+    let english = TranscriptionOptions(languages: ["en"])
+    for (reference, samples) in zip(references, [a, b]) {
+        let run = dictate(samples, service: service, options: english)
+        guard case .success(let transcript) = run.final else { check(false, "'\(reference)' streams to a transcript: \(run.final)"); continue }
+        let errors = wordErrors(reference, transcript.text)
+        check(errors <= 1, "at most one word error: '\(transcript.text)' (\(errors))")
+        check(words(transcript.text).split(separator: " ").first == words(reference).split(separator: " ").first, "the first word is there: '\(transcript.text)'")
+        check(!run.partials.isEmpty && run.partials.allSatisfy { !$0.isEmpty }, "live text while speaking (\(run.partials.count) partials)")
+        check(run.tail < 0.1, "key-up to text under 100 ms (\(Int(run.tail * 1000)) ms)")
+        check(transcript.language == "en" && transcript.segments.count == 1, "one English segment")
+        print("  nemotron: \(String(format: "%.1f", Double(samples.count) / 16_000)) s live → '\(transcript.text)', \(errors) error(s), "
+              + "\(run.partials.count) partials, tail \(Int(run.tail * 1000)) ms")
+    }
+    // "Retry transcript" and imports run the whole clip at once.
+    let t0 = Date()
+    if case .success(let transcript)? = complete(60, { try await service.transcribe(AudioClip(samples: a), options: english, priority: .dictation) }) {
+        check(wordErrors(references[0], transcript.text) <= 1, "a whole clip on Nemotron: '\(transcript.text)'")
+        print("  nemotron: whole \(String(format: "%.1f", Double(a.count) / 16_000)) s clip in \(Int(Date().timeIntervalSince(t0) * 1000)) ms")
+    } else { check(false, "a whole clip transcribes on Nemotron") }
+    let silent = dictate([Float](repeating: 0, count: 32_000), service: service, options: english)
+    if case .failure(let error) = silent.final { check((error as? SpeechError) == .noSpeech, "silence is no speech (\(error))") }
+    else { check(false, "silence must not produce text") }
+    service.unload()
+}
+
+/// Apple's engine (macOS 26) when the OS already has the English assets: the self-test never asks for a download.
+@MainActor private func speechApple() {
+    guard #available(macOS 26, *), SpeechTranscriber.isAvailable else { print("  (skipped: needs macOS 26)"); return }
+    guard case .success(let locales)? = complete(30, { await SpeechTranscriber.installedLocales }),
+          locales.contains(where: { $0.identifier == "en_US" }) else {
+        print("  (skipped: the English speech assets aren't installed)"); return
+    }
+    guard let samples = spoken("Please send the quarterly report to Dana by Friday.", voice: "Samantha", padding: 0.3) else {
+        print("  (skipped: no speech synthesiser)"); return
+    }
+    let id = ModelCatalog.appleSpeech.id
+    let root = SuperFlowPaths.support.appendingPathComponent("apple-models-\(UUID().uuidString)", isDirectory: true)
+    let manager = ModelManager(catalog: ModelCatalog.all, root: { root }, environment: FakeEnvironment(networkUsable: false), plan: { [] })
+    check(manager.state(of: id) == .installed && manager.location(of: id) == nil, "Apple's engine is there with nothing on disk")
+    let service = SpeechService(models: manager)
+    check(!service.availableEngines.contains(id), "not offered as a fallback until chosen")
+    Defaults[.asrModelID] = id
+    Defaults[.selectedLanguages] = ["en"]
+    defer { Defaults.reset(.asrModelID); Defaults.reset(.selectedLanguages) }
+    check(service.availableEngines == [id], "chosen, it is the engine")
+    let started = Date()
+    guard case .success? = complete(120, { try await service.prepare(modelID: id) }) else { check(false, "Apple's engine prepares"); return }
+    print("  apple: prepared in \(String(format: "%.2f", Date().timeIntervalSince(started))) s")
+    let english = TranscriptionOptions(languages: ["en"], vocabulary: ["Dana"])
+    let t0 = Date()
+    if case .success(let transcript)? = complete(60, { try await service.transcribe(AudioClip(samples: samples), options: english, priority: .dictation) }) {
+        check(wordErrors("Please send the quarterly report to Dana by Friday.", transcript.text) <= 2, "Apple's engine hears it: '\(transcript.text)'")
+        print("  apple: whole clip in \(Int(Date().timeIntervalSince(t0) * 1000)) ms → '\(transcript.text)'")
+    } else { check(false, "Apple's engine transcribes") }
+    service.unload()
 }
 
 @MainActor private func speechWhisper() {

@@ -227,7 +227,20 @@ private func coreContractAdditions() {
 }
 
 private func coreModelCatalog() {
-    check(ModelCatalog.all.count == 11 && Set(ModelCatalog.all.map(\.id)).count == 11, "unique catalog ids")
+    check(ModelCatalog.all.count == 13 && Set(ModelCatalog.all.map(\.id)).count == 13, "unique catalog ids")
+    let nemotron = ModelCatalog.nemotronStreamingEN
+    check(nemotron.bytes == 626_803_815 && nemotron.revision == "e673531caa6d25ab7baf5a8c14c9b99ba1551838" && nemotron.subfolder == "nemotron_coreml_1120ms"
+          && nemotron.languages == ["en"] && nemotron.attribution.contains("Licensed by NVIDIA Corporation under the NVIDIA Open Model License"),
+          "Nemotron: pinned tier, size and the NVIDIA notice")
+    check(ModelCatalog.appleSpeech.isBuiltIn && ModelCatalog.appleSpeech.bytes == 0 && !ModelCatalog.parakeetV3.isBuiltIn, "Apple's engine is built in")
+    check(ModelCatalog.dictationEngines(isAppleSilicon: true, hasAppleSpeech: false).map(\.id) == [ModelCatalog.parakeetV3.id, nemotron.id]
+          && ModelCatalog.dictationEngines(isAppleSilicon: true, hasAppleSpeech: true).last?.id == ModelCatalog.appleSpeech.id
+          && ModelCatalog.dictationEngines(isAppleSilicon: false, hasAppleSpeech: true).isEmpty, "dictation engine choices")
+    check(ModelCatalog.cleanupModels(isAppleSilicon: true, memoryBytes: 16 << 30).isEmpty
+          && ModelCatalog.cleanupModels(isAppleSilicon: true, memoryBytes: 24 << 30).map(\.id) == [ModelCatalog.qwen35_2B.id, ModelCatalog.qwen35_4B.id],
+          "the 4B cleanup model is offered from 24 GB")
+    check(Defaults.Keys.cleanupModelID.defaultValue == ModelCatalog.qwen35_2B.id && Defaults.Keys.asrModelID.defaultValue == ModelCatalog.parakeetV3.id,
+          "defaults: Parakeet and Qwen3.5-2B")
     check(ModelCatalog.all.filter { $0.url != nil }.allSatisfy { $0.sha256?.count == 64 }, "every URL entry has a SHA-256")
     check(ModelCatalog.whisperLargeV3Turbo.fileName == "ggml-large-v3-turbo-q5_0.bin" && ModelCatalog.parakeetV3.fileName == "parakeet-tdt-0.6b-v3", "file names")
     check(ModelCatalog.all.allSatisfy { !$0.licence.isEmpty && !$0.attribution.isEmpty }, "licence and attribution on every model")
