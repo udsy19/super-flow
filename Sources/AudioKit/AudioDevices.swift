@@ -126,4 +126,19 @@ public enum InputDevices {
         if let systemDefault, let device = usable.first(where: { $0.id == systemDefault }) { return device }
         return usable.first { !$0.isVirtual } ?? usable.first
     }
+
+    /// Starts capture on the chosen device and, when that fails (it was unplugged, or refuses to start after a format
+    /// change), on the system default input, so a dictation or meeting keeps a microphone. `start(nil)` is the default.
+    /// Returns the device that started; throws the chosen device's error when neither does.
+    public static func startWithFallback<ID: Equatable>(_ chosen: ID?, _ start: (ID?) throws -> Void) throws -> ID? {
+        do {
+            try start(chosen)
+            return chosen
+        } catch let chosenError {
+            guard chosen != nil else { throw chosenError }
+            Log.audio.error("The chosen microphone didn't start (\(chosenError.localizedDescription, privacy: .public)); trying the system default input")
+            do { try start(nil) } catch { throw chosenError }
+            return nil
+        }
+    }
 }

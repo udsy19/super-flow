@@ -18,18 +18,22 @@ final class MicrophoneCapture {
 
     var isRunning: Bool { engine?.isRunning ?? false }
 
-    /// Starts the tap on `device` (nil: the system default input). Throws `AudioError.deviceUnavailable` when the device
-    /// has no usable input format or the engine refuses to start.
+    /// Starts the tap on `device` (nil: the system default input), falling back to the system default when the device
+    /// won't start. Throws `AudioError.deviceUnavailable` when no input starts.
     func start(device: AudioDevice?) throws {
         stop()
         let id = device.flatMap { CoreAudioHAL.device(withUID: $0.id) }
-        try startEngine(deviceID: id, name: device?.name ?? "The microphone")
+        let name = device?.name ?? "The microphone"
+        _ = try InputDevices.startWithFallback(id) { try startEngine(deviceID: $0, name: name) }
         configurationObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: nil, queue: .main) { [weak self] note in
-            // The device's format or route changed (AirPods connecting, sample-rate switch): rebuild the tap.
+            // The device's format or route changed (AirPods connecting, sample-rate switch, the device going away):
+            // rebuild the tap, on the system default input if the device itself won't come back.
             guard let self, let engine = self.engine, note.object as? AVAudioEngine === engine else { return }
             Log.audio.info("Microphone configuration changed; restarting the tap")
-            try? self.startEngine(deviceID: self.deviceID, name: device?.name ?? "The microphone")
+            do { _ = try InputDevices.startWithFallback(self.deviceID) { try self.startEngine(deviceID: $0, name: name) } } catch {
+                Log.audio.error("The microphone couldn't be restarted: \(error.localizedDescription, privacy: .public)")
+            }
         }
     }
 

@@ -11,6 +11,7 @@ func registerAudioKitTests() {
     SelfTest.cases.append(("AudioKit.frameHubAndPreRoll", { audioFrameHub() }))
     SelfTest.cases.append(("AudioKit.levelBatching", { audioLevelBatching() }))
     SelfTest.cases.append(("AudioKit.deviceChoice", { audioDeviceChoice() }))
+    SelfTest.cases.append(("AudioKit.unpluggedMicFallsBack", { audioUnpluggedMicFallsBack() }))
     SelfTest.cases.append(("AudioKit.serviceWithoutCapture", { MainActor.assumeIsolated { audioServiceIdle() } }))
 }
 
@@ -212,4 +213,28 @@ private func audioDeviceChoice() {
     let cancellable = audio.level.sink { levels.append($0) }
     check(levels == [0], "the level starts at 0")
     cancellable.cancel()
+}
+
+/// The chosen microphone was unplugged (or won't restart after a format change): capture moves to the system default
+/// input instead of going silent; only when nothing starts is the chosen device's error reported.
+private func audioUnpluggedMicFallsBack() {
+    struct Gone: Error {}
+    var tried: [Int?] = []
+    let started = try? InputDevices.startWithFallback(7) { (id: Int?) in
+        tried.append(id)
+        if id == 7 { throw AudioError.deviceUnavailable("USB mic") }
+    }
+    check(tried == [7, nil] && started == .some(nil), "the default input takes over: \(tried)")
+    tried = []
+    check((try? InputDevices.startWithFallback(7) { (id: Int?) in tried.append(id) }) == .some(7) && tried == [7], "a working device is used as is")
+    tried = []
+    do {
+        _ = try InputDevices.startWithFallback(7) { (id: Int?) in tried.append(id); throw id == nil ? Gone() : AudioError.deviceUnavailable("USB mic") }
+        check(false, "nothing starts: an error")
+    } catch {
+        check(error as? AudioError == .deviceUnavailable("USB mic") && tried == [7, nil], "the chosen device's error is reported")
+    }
+    tried = []
+    check((try? InputDevices.startWithFallback(Int?.none) { (id: Int?) in tried.append(id); throw Gone() }) == nil && tried == [nil],
+          "the default input isn't tried twice")
 }

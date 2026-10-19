@@ -65,3 +65,5 @@ All notable changes to Super Flow are recorded here. The format follows Keep a C
   model is tried, and a card says whether dictation is running on another model or can't start until it's fixed.
 - Notes and meeting notes typed just before quitting are saved: the pause-before-saving editors save at once when the
   app quits. A meeting note or a dictionary star that can't be saved says so instead of failing silently.
+- A microphone that is unplugged, or won't restart after a format change, hands capture to the system default input
+  instead of leaving the recording silent.
