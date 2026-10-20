@@ -2,11 +2,27 @@
   "use strict";
   const $ = (s, r = document) => r.querySelector(s);
   const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+  const root = document.documentElement;
+  const wideMQ = matchMedia("(min-width: 992px)");
+  const phoneMQ = matchMedia("(max-width: 767px)");
   const reduceMQ = matchMedia("(prefers-reduced-motion: reduce)");
-  const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-  const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+  const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+  const span = (v, a, b) => clamp((v - a) / (b - a), 0, 1);
+  const SVGNS = "http://www.w3.org/2000/svg";
 
-  // ---- Copy buttons -------------------------------------------------------------------------------------------
+  // Runs fn while el is on screen and the tab is visible.
+  function whileVisible(el, start, stop) {
+    let on = false, seen = false;
+    const sync = () => { const want = seen && !document.hidden; if (want !== on) { on = want; (on ? start : stop)(); } };
+    new IntersectionObserver((es) => { seen = es[es.length - 1].isIntersecting; sync(); }, { rootMargin: "80px 0px" }).observe(el);
+    document.addEventListener("visibilitychange", sync);
+  }
+  // CSS animations pause when their section is off screen.
+  $$(".strip, .hero, .story, .feats, .ex, .foot").forEach((el) => whileVisible(el, () => el.classList.remove("paused"), () => el.classList.add("paused")));
+
+  // ---- Copy ---------------------------------------------------------------------------------------------------
   $$("[data-copy]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const text = btn.getAttribute("data-copy");
@@ -25,410 +41,467 @@
     });
   });
 
-  // ---- The rig: audio → heard → typed ------------------------------------------------------------------------
-  // Real cases from docs/specs/cleanup-eval.jsonl with the output and cleanup time Super Flow produced (M4 Pro).
-  // In `heard`, a leading ~ marks a filler sound, - a word cleanup removes, * a word cleanup rewrites.
-  const EXAMPLES = [
-    { name: "Fillers", target: "Any app · Formal", ms: 172,
-      heard: "-The, ~uh, the budget for Q3 is, ~um, about *forty *thousand *dollars.",
-      typed: "The budget for Q3 is about $40,000." },
-    { name: "Correction", target: "Any app · Formal", ms: 73,
-      heard: "-Send -it -to -John, -no -wait, send it to Sarah.",
-      typed: "Send it to Sarah." },
-    { name: "List", target: "Any app · Formal · Medium", ms: 222,
-      heard: "*groceries for this week eggs milk ~uh bread -and -like two bags of coffee",
-      typed: "Groceries for this week:\n- Eggs\n- Milk\n- Bread\n- Two bags of coffee" },
-    { name: "Terminal", target: "Terminal", ms: 96, mono: true,
-      heard: "npm install *dash *dash *save *dash *dev typescript",
-      typed: "npm install --save-dev typescript" },
-    { name: "Numbers", target: "Any app · Formal", ms: 186,
-      heard: "Call me at *five *five *five, *one *two *three, *four *five *six *seven.",
-      typed: "Call me at 555-123-4567." },
-    { name: "French", target: "Any app · Formal", ms: 135, lang: "fr",
-      heard: "~euh je pense qu'on devrait ~euh reporter le lancement à la semaine prochaine",
-      typed: "Je pense qu'on devrait reporter le lancement à la semaine prochaine." },
-  ];
-
-  const IDLE = 0.5;      // before fn goes down
-  const LEAD = 0.3;      // fn down → first word
-  const POST = 0.15;     // the app's post-roll
-  const PROC = 0.65;     // post-roll + this ≈ the measured 0.8 s from key-up to text
-  const MARK = 0.12;     // when the cleanup marks start, after processing begins
-
-  for (const ex of EXAMPLES) {
-    let t = LEAD;
-    ex.tokens = ex.heard.split(" ").map((raw) => {
-      const p = raw[0];
-      const kind = p === "~" ? "hum" : p === "-" ? "cut" : p === "*" ? "chg" : "";
-      const text = kind ? raw.slice(1) : raw;
-      const letters = text.replace(/[^\p{L}\p{N}]/gu, "").length;
-      const tk = { text, kind, letters, start: t, dur: kind === "hum" ? 0.36 : Math.max(0.17, 0.08 + 0.056 * letters) };
-      t += tk.dur + (/[.?!:]$/.test(text) ? 0.24 : /,$/.test(text) ? 0.15 : 0.035);
-      return tk;
-    });
-    ex.keyUp = t;                       // seconds after fn went down
-    ex.end = t + POST;                  // mic closes
-    ex.typedAt = ex.end + PROC;         // text lands
-    ex.hold = Math.min(5.2, 3.4 + ex.typed.length * 0.018);
-    ex.total = IDLE + ex.typedAt + ex.hold;
-  }
-
-  function hash(a, b) {
-    let h = Math.imul(a | 0, 374761393) + Math.imul(b | 0, 668265263) | 0;
-    h = Math.imul(h ^ (h >>> 13), 1274126177);
-    return ((h ^ (h >>> 16)) >>> 0) / 4294967295;
-  }
-  function tokenAt(ex, t) {
-    const toks = ex.tokens;
-    for (let i = 0; i < toks.length; i++) if (t >= toks[i].start && t < toks[i].start + toks[i].dur) return i;
-    return -1;
-  }
-  function amp(ex, t, i) {
-    const n = hash(i + 11, Math.floor(t * 90));
-    if (i < 0) return 0.02 + 0.03 * n;
-    const tk = ex.tokens[i];
-    const u = (t - tk.start) / tk.dur;
-    if (tk.kind === "hum") { // a filler is a flat, sustained hum
-      const edge = Math.max(0, Math.min(1, u / 0.12, (1 - u) / 0.12));
-      return (0.25 + 0.04 * Math.sin(t * 40) + 0.04 * n) * edge;
-    }
-    const syl = Math.max(1, Math.round(tk.letters / 3));
-    const env = Math.pow(Math.sin(Math.PI * u), 0.6);
-    const mod = 0.45 + 0.55 * Math.abs(Math.sin(Math.PI * syl * u));
-    return (0.5 + 0.42 * hash(i + 3, 7)) * env * mod * (0.78 + 0.38 * n);
-  }
-
-  const rig = $("#rig");
-  if (rig) {
-    const el = {
-      key: $("[data-key]", rig), state: $("[data-state]", rig), target: $("[data-target]", rig),
-      canvas: $("[data-wave]", rig), ruler: $("[data-ruler]", rig), heard: $("[data-heard]", rig),
-      typed: $("[data-typed]", rig), ms: $("[data-ms]", rig), pill: $("[data-pill]", rig),
-      bars: $$("[data-pill] .pw i", rig), tabs: $("[data-tabs]", rig), pause: $("[data-pause]", rig),
-    };
-    const WEIGHTS = Array.from({ length: 10 }, (_, i) => Math.max(0, 1 - Math.pow(4.5 - i, 2) / 48));
-    const PHASE = [0, 0.1, 0.2, 0.3, 0.4, -0.5, -0.4, -0.3, -0.2, -0.1];
-    let index = 0, elapsed = 0, playing = !reduceMQ.matches, userPaused = false, visible = true, raf = 0, last = 0;
-    let shown = { ex: -1 };
-    let colors = {};
-    const readColors = () => { colors = { ink: css("--ink"), lilac: css("--lilac"), line: css("--line-2"), wash: css("--lilac-wash") }; };
-    readColors();
-
-    // Tabs
-    const tabButtons = EXAMPLES.map((ex, i) => {
-      const b = document.createElement("button");
-      b.type = "button"; b.className = "tab"; b.innerHTML = `${esc(ex.name)}<i></i>`;
-      b.addEventListener("click", () => select(i));
-      el.tabs.appendChild(b);
-      return b;
-    });
-
-    function setText(node, text) { if (node.textContent !== text) node.textContent = text; }
-
-    function buildExample(i) {
-      const ex = EXAMPLES[i];
-      el.heard.innerHTML = ex.tokens.map((tk, k) =>
-        `<span class="w${tk.kind === "hum" ? " hum" : ""}" data-i="${k}">${esc(tk.text)}</span>`).join(" ");
-      el.heard.lang = ex.lang || "en";
-      el.typed.lang = ex.lang || "en";
-      el.typed.classList.toggle("mono", !!ex.mono);
-      el.typed.innerHTML = '<span class="caret"></span>';
-      setText(el.target, "→ " + ex.target);
-      el.words = $$(".w", el.heard);
-      // Ruler: whole seconds, plus the moment fn is released.
-      const ticks = [];
-      for (let s = 0; s <= ex.end; s += 1) {
-        if (s > ex.keyUp - 0.55) break;
-        ticks.push(`<span style="left:${(s / ex.end) * 100}%">${s} s</span>`);
-      }
-      ticks.push(`<span class="k" data-k hidden style="right:${(1 - ex.keyUp / ex.end) * 100}%">let go</span>`);
-      el.ruler.innerHTML = ticks.join("");
-      el.kmark = $("[data-k]", el.ruler);
-      tabButtons.forEach((b, k) => b.setAttribute("aria-current", k === i ? "true" : "false"));
-      shown = { ex: i, phase: "", on: -1, marked: false, typed: false };
-    }
-
-    function render(t) {
-      const ex = EXAMPLES[index];
-      if (shown.ex !== index) buildExample(index);
-      const r = t - IDLE;                       // time since fn went down
-      const held = r >= 0 && r < ex.keyUp;
-      const phase = r < 0 ? "idle" : r < ex.keyUp ? "listen" : r < ex.end ? "post" : r < ex.typedAt ? "proc" : "typed";
-
-      el.key.classList.toggle("down", held);
-      el.pill.className = "pill " + (phase === "idle" || phase === "typed" ? "is-rest" : phase === "proc" ? "is-proc" : "is-ptt");
-      const stateText = phase === "idle" ? "Hold fn to talk"
-        : phase === "listen" ? `Listening ${r.toFixed(1)} s`
-        : phase === "post" ? "Let go"
-        : phase === "proc" ? "Cleaning up"
-        : "Typed 0.8 s after let go";
-      setText(el.state, stateText);
-
-      // Heard words appear a beat after they are spoken.
-      let on = -1;
-      ex.tokens.forEach((tk, k) => { if (r >= tk.start + Math.min(0.12, tk.dur * 0.6)) on = k; });
-      if (on !== shown.on) { el.words.forEach((w, k) => w.classList.toggle("on", k <= on)); shown.on = on; }
-
-      // Cleanup marks: staggered, while the bar spins.
-      const markT = r - (ex.end + MARK);
-      if (markT >= 0 || shown.marked) {
-        el.words.forEach((w, k) => {
-          const due = markT >= k * 0.025;
-          const kind = ex.tokens[k].kind;
-          w.classList.toggle("cut", due && (kind === "hum" || kind === "cut"));
-          w.classList.toggle("chg", due && kind === "chg");
+  // ---- Buttons: the label ripples on hover ---------------------------------------------------------------------
+  $$(".btn").forEach((btn) => {
+    const label = btn.textContent.replace(/\s+/g, " ").trim();
+    btn.setAttribute("aria-label", btn.querySelector(".lg") ? btn.querySelector(".lg").textContent : label);
+    const targets = btn.querySelector(".lg") ? [btn.querySelector(".lg"), btn.querySelector(".sm")] : [btn];
+    targets.forEach((host) => {
+      [...host.childNodes].filter((n) => n.nodeType === 3 && n.textContent.trim()).forEach((node) => {
+        const frag = document.createElement("span");
+        frag.className = "wave";
+        [...node.textContent.trim()].forEach((ch, i) => {
+          const s = document.createElement("span");
+          s.className = "wave-l"; s.textContent = ch; s.setAttribute("aria-hidden", "true");
+          s.style.setProperty("--wy", (Math.sin(i * 0.85) * 3.2).toFixed(2) + "px");
+          s.style.transitionDelay = i * 12 + "ms";
+          frag.appendChild(s);
         });
-        shown.marked = markT >= 0;
-      }
-      el.kmark.hidden = r < ex.keyUp;
-
-      // Typed text lands at once: it is pasted, not typed.
-      const isTyped = phase === "typed";
-      if (isTyped !== shown.typed) {
-        if (isTyped) {
-          const prompt = ex.mono ? '<span class="tprompt">~ % </span>' : "";
-          el.typed.innerHTML = `${prompt}<span class="txt pre">${esc(ex.typed)}</span><span class="caret"></span>`;
-          const txt = $(".txt", el.typed);
-          requestAnimationFrame(() => txt && txt.classList.remove("pre"));
-          setText(el.ms, `${ex.ms} ms`);
-        } else {
-          el.typed.innerHTML = '<span class="caret"></span>';
-          setText(el.ms, "—");
-        }
-        shown.typed = isTyped;
-      }
-
-      // The bar's own waveform follows the audio level.
-      if (phase === "listen" || phase === "post" || phase === "proc") {
-        const level = phase === "proc" ? 0 : amp(ex, r, tokenAt(ex, r));
-        el.bars.forEach((b, k) => {
-          const osc = 1 + 0.3 * Math.sin(2 * Math.PI * (t + PHASE[k]));
-          const h = Math.min(18, 2 + 14 * WEIGHTS[k] * Math.min(1, level * 1.7) * osc);
-          b.style.height = h.toFixed(1) + "px";
-          b.style.opacity = level > 0.08 ? "1" : "0.4";
-        });
-      }
-
-      drawWave(ex, Math.max(0, Math.min(r, ex.end)), r >= ex.end + MARK, r);
-      const bar = tabButtons[index].querySelector("i");
-      if (bar) bar.style.transform = `scaleX(${playing ? Math.min(1, t / ex.total) : 0})`;
-    }
-
-    function drawWave(ex, now, cleaned, r) {
-      const c = el.canvas;
-      const w = c.clientWidth, h = c.clientHeight, dpr = Math.min(2, window.devicePixelRatio || 1);
-      if (!w || !h) return;
-      if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) {
-        c.width = Math.round(w * dpr); c.height = Math.round(h * dpr);
-      }
-      const ctx = c.getContext("2d");
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.clearRect(0, 0, w, h);
-      const T = ex.end;
-      const xKey = (ex.keyUp / T) * w;
-      // Post-roll: the 150 ms the microphone stays open after fn comes up.
-      if (r >= ex.keyUp) {
-        ctx.globalAlpha = 1; ctx.fillStyle = colors.wash; ctx.fillRect(xKey, 0, w - xKey, h);
-      }
-      ctx.globalAlpha = 1; ctx.fillStyle = colors.line; ctx.fillRect(0, Math.round(h / 2), Math.min(w, (now / T) * w), 1);
-      const pitch = w < 480 ? 3 : 4, bw = 2;
-      const n = Math.floor((w + pitch - bw) / pitch);
-      for (let k = 0; k < n; k++) {
-        const t = ((k * pitch + bw / 2) / w) * T;
-        if (t > now) break;
-        const i = tokenAt(ex, t);
-        const a = amp(ex, t, i);
-        const bh = Math.max(2, a * (h - 6));
-        const kind = i >= 0 ? ex.tokens[i].kind : "";
-        const removed = cleaned && (kind === "hum" || kind === "cut");
-        ctx.fillStyle = removed ? colors.lilac : colors.ink;
-        ctx.globalAlpha = removed ? 0.7 : t > ex.keyUp ? 0.3 : 0.88;
-        const y = (h - bh) / 2;
-        if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(k * pitch, y, bw, bh, 1); ctx.fill(); }
-        else ctx.fillRect(k * pitch, y, bw, bh);
-      }
-      if (r >= ex.keyUp) { // the moment fn came up
-        ctx.globalAlpha = 1; ctx.fillStyle = colors.lilac;
-        for (let y = 0; y < h; y += 4) ctx.fillRect(Math.round(xKey), y, 1, 2);
-      }
-      if (now > 0 && now < T) { // recording head
-        ctx.globalAlpha = 1; ctx.fillStyle = colors.ink; ctx.fillRect(Math.round((now / T) * w), 0, 1, h);
-      }
-    }
-
-    // Lanes keep one height for every example, so the page never shifts while the demo plays.
-    function fit() {
-      const keep = index;
-      let hh = 0, th = 0;
-      el.heard.style.minHeight = ""; el.typed.style.minHeight = "";
-      EXAMPLES.forEach((ex, i) => {
-        index = i; buildExample(i);
-        el.words.forEach((w) => w.classList.add("on"));
-        hh = Math.max(hh, el.heard.offsetHeight);
-        el.typed.classList.toggle("mono", !!ex.mono);
-        el.typed.innerHTML = `${ex.mono ? '<span class="tprompt">~ % </span>' : ""}<span class="txt">${esc(ex.typed)}</span><span class="caret"></span>`;
-        th = Math.max(th, el.typed.offsetHeight);
-      });
-      el.heard.style.minHeight = hh + "px";
-      el.typed.style.minHeight = th + "px";
-      index = keep; shown = { ex: -1 };
-      render(elapsed);
-    }
-
-    function finalTime(ex) { return IDLE + ex.typedAt + 0.01; }
-
-    function select(i) {
-      index = i;
-      elapsed = playing ? 0 : finalTime(EXAMPLES[i]);
-      shown = { ex: -1 };
-      tabButtons.forEach((b) => { const bar = b.querySelector("i"); if (bar) bar.style.transform = "scaleX(0)"; });
-      render(elapsed);
-      if (playing) start();
-    }
-
-    function frame(now) {
-      raf = 0;
-      if (!playing || !visible) return;
-      const dt = Math.min(0.1, (now - last) / 1000);
-      last = now;
-      elapsed += dt;
-      const ex = EXAMPLES[index];
-      if (elapsed >= ex.total) {
-        const bar = tabButtons[index].querySelector("i"); if (bar) bar.style.transform = "scaleX(0)";
-        index = (index + 1) % EXAMPLES.length; elapsed = 0; shown = { ex: -1 };
-      }
-      render(elapsed);
-      raf = requestAnimationFrame(frame);
-    }
-    function start() { if (!raf && playing && visible) { last = performance.now(); raf = requestAnimationFrame(frame); } }
-    function stop() { if (raf) cancelAnimationFrame(raf); raf = 0; }
-
-    function setPlaying(p) {
-      playing = p;
-      el.pause.textContent = p ? "Pause" : "Play";
-      el.pause.setAttribute("aria-pressed", p ? "false" : "true");
-      if (p) {
-        if (elapsed >= finalTime(EXAMPLES[index]) && elapsed >= EXAMPLES[index].total - 0.01) elapsed = 0;
-        start();
-      } else { stop(); render(elapsed); }
-    }
-    el.pause.addEventListener("click", () => { userPaused = playing; setPlaying(!playing); });
-
-    function applyMotionPref() {
-      if (reduceMQ.matches) {
-        el.pause.hidden = true; stop(); playing = false;
-        elapsed = finalTime(EXAMPLES[index]); shown = { ex: -1 }; render(elapsed);
-      } else {
-        el.pause.hidden = false;
-        if (!userPaused) setPlaying(true);
-      }
-    }
-    reduceMQ.addEventListener ? reduceMQ.addEventListener("change", applyMotionPref) : reduceMQ.addListener(applyMotionPref);
-
-    new IntersectionObserver((entries) => {
-      visible = entries[0].isIntersecting;
-      if (visible) start(); else stop();
-    }, { threshold: 0.15 }).observe(rig);
-    document.addEventListener("visibilitychange", () => { if (document.hidden) stop(); else start(); });
-
-    let lastWidth = rig.clientWidth, rt = 0;
-    window.addEventListener("resize", () => {
-      clearTimeout(rt);
-      rt = setTimeout(() => { if (rig.clientWidth !== lastWidth) { lastWidth = rig.clientWidth; fit(); } else render(elapsed); }, 120);
-    });
-    matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", () => { readColors(); render(elapsed); });
-
-    if (reduceMQ.matches) { playing = false; el.pause.hidden = true; elapsed = finalTime(EXAMPLES[0]); }
-    fit();
-    if (document.fonts && document.fonts.ready) document.fonts.ready.then(fit);
-    start();
-  }
-
-  // ---- Command Mode demo ---------------------------------------------------------------------------------------
-  const sel = $("[data-cmd-sel]");
-  if (sel) {
-    const wrap = $("[data-cmd-wrap]"), pill = $("[data-cmd-pill]"), said = $("[data-said]"), live = $("[data-cmd-live]");
-    const chips = $$("[data-cmd]");
-    const VARIANTS = {
-      reset: { said: "", text: sel.textContent },
-      short: { said: "make this shorter", text: "Quick update: the beta goes out on Thursday, then we’ll spend two weeks fixing what people report before the public launch." },
-      list: { said: "turn it into a list", text: "Quick update on where things stand:\n- The beta goes out on Thursday\n- Then two weeks of fixing what people report\n- Then the public launch" },
-      es: { said: "translate to Spanish", text: "Quería daros una actualización rápida de cómo van las cosas. La beta sale el jueves y, después, dedicaremos dos semanas a corregir todo lo que se reporte antes del lanzamiento público." },
-    };
-    let timers = [];
-    const later = (ms, fn) => timers.push(setTimeout(fn, ms));
-
-    function fitCmd() {
-      const current = sel.textContent;
-      wrap.style.minHeight = "";
-      let h = 0;
-      Object.values(VARIANTS).forEach((v) => { sel.textContent = v.text; h = Math.max(h, wrap.offsetHeight); });
-      sel.textContent = current;
-      wrap.style.minHeight = h + "px";
-    }
-    function run(key) {
-      timers.forEach(clearTimeout); timers = [];
-      const v = VARIANTS[key];
-      chips.forEach((c) => c.setAttribute("aria-pressed", c.dataset.cmd === key && key !== "reset" ? "true" : "false"));
-      if (key === "reset" || reduceMQ.matches) {
-        sel.textContent = v.text; sel.classList.remove("fade"); said.classList.remove("on");
-        pill.className = "pill is-rest is-cmd demo";
-        live.textContent = key === "reset" ? "Selection restored." : `Selection replaced: ${v.text}`;
-        return;
-      }
-      said.textContent = `“${v.said}”`; said.classList.add("on");
-      pill.className = "pill is-ptt is-cmd demo";
-      later(1300, () => { pill.className = "pill is-proc is-cmd demo"; sel.classList.add("fade"); });
-      later(2000, () => {
-        sel.textContent = v.text; sel.classList.remove("fade");
-        pill.className = "pill is-rest is-cmd demo";
-        live.textContent = `Selection replaced: ${v.text}`;
-      });
-      later(3000, () => said.classList.remove("on"));
-    }
-    chips.forEach((c) => c.addEventListener("click", () => run(c.dataset.cmd)));
-    fitCmd();
-    if (document.fonts && document.fonts.ready) document.fonts.ready.then(fitCmd);
-    let cw = wrap.clientWidth;
-    window.addEventListener("resize", () => { if (wrap.clientWidth !== cw) { cw = wrap.clientWidth; fitCmd(); } });
-  }
-
-  // ---- Meeting page tabs ---------------------------------------------------------------------------------------
-  const tabs = $$('.mtabs [role="tab"]');
-  if (tabs.length) {
-    const activate = (tab, focus) => {
-      tabs.forEach((t) => {
-        const on = t === tab;
-        t.setAttribute("aria-selected", on ? "true" : "false");
-        t.tabIndex = on ? 0 : -1;
-        document.getElementById(t.getAttribute("aria-controls")).hidden = !on;
-      });
-      if (focus) tab.focus();
-    };
-    tabs.forEach((t, i) => {
-      t.addEventListener("click", () => activate(t, false));
-      t.addEventListener("keydown", (e) => {
-        const d = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
-        if (d) { e.preventDefault(); activate(tabs[(i + d + tabs.length) % tabs.length], true); }
-        else if (e.key === "Home") { e.preventDefault(); activate(tabs[0], true); }
-        else if (e.key === "End") { e.preventDefault(); activate(tabs[tabs.length - 1], true); }
+        node.replaceWith(frag);
       });
     });
-  }
-
-  // ---- Two recording tracks: you and them take turns -----------------------------------------------------------
-  const turns = [["you", 7], ["them", 8], ["them", 5], ["you", 5], ["them", 4], ["you", 3]];
-  const total = turns.reduce((s, x) => s + x[1], 0);
-  $$("[data-track]").forEach((track) => {
-    const who = track.dataset.track, n = 140;
-    let html = "";
-    for (let k = 0; k < n; k++) {
-      let t = (k / n) * total, owner = turns[turns.length - 1][0];
-      for (const [w, d] of turns) { if (t < d) { owner = w; break; } t -= d; }
-      const talking = owner === who && hash(k, 5) > 0.12;
-      const hgt = talking ? 4 + 24 * Math.pow(hash(k, who === "you" ? 1 : 2), 1.4) * (0.6 + 0.4 * Math.abs(Math.sin(k * 0.7))) : 2 + 2 * hash(k, 9);
-      html += `<i class="${talking ? "" : "q"}" style="height:${hgt.toFixed(1)}px"></i>`;
-    }
-    track.innerHTML = html;
   });
+
+  // ---- Nav ----------------------------------------------------------------------------------------------------
+  const nav = $("[data-nav]"), burger = $("[data-burger]"), menu = $("[data-menu]");
+  const setMenu = (open) => {
+    burger.setAttribute("aria-expanded", String(open));
+    menu.hidden = !open;
+    nav.classList.toggle("is-open", open);
+  };
+  burger.addEventListener("click", () => setMenu(burger.getAttribute("aria-expanded") !== "true"));
+  menu.addEventListener("click", (e) => { if (e.target.closest("a")) setMenu(false); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !menu.hidden) { setMenu(false); burger.focus(); } });
+  phoneMQ.addEventListener("change", () => setMenu(false));
+  const segs = $$("[data-seg]");
+  const setSeg = (name) => segs.forEach((a) => {
+    const on = a.dataset.seg === name;
+    a.classList.toggle("seg-on", on);
+    if (on) a.setAttribute("aria-current", "true"); else a.removeAttribute("aria-current");
+  });
+
+  // ---- Hero ribbon --------------------------------------------------------------------------------------------
+  const ribbon = $("[data-ribbon]");
+  if (ribbon) {
+    const raw = $("#rb-raw"), clean = $("#rb-clean");
+    const rawTP = $("[data-raw]", ribbon), cleanTP = $("[data-clean]", ribbon);
+    const PATHS = {
+      wide: {
+        raw: "M -760 300 C -320 292 60 266 205 250 C 300 222 362 160 342 100 C 322 40 232 22 186 60 C 140 98 150 180 200 232 C 262 300 420 425 700 455",
+        clean: "M 720 455 C 960 445 1180 392 1500 300 S 1980 160 2300 110",
+      },
+      phone: {
+        raw: "M -400 330 C 120 334 330 336 446 322 C 518 312 560 248 546 196 C 532 146 470 134 449 176 C 428 218 456 282 506 334 C 548 378 610 440 700 455",
+        clean: "M 720 455 C 900 448 1060 400 1300 330 S 1700 200 2000 140",
+      },
+    };
+    const baseRaw = rawTP.textContent, baseClean = cleanTP.textContent;
+    rawTP.textContent = baseRaw.repeat(4);
+    cleanTP.textContent = baseClean.repeat(4);
+    const bars = $("[data-bars]", ribbon);
+    const N = 17, bw = 3.6, gap = 2.3, x0 = 720 - (N * bw + (N - 1) * gap) / 2;
+    for (let i = 0; i < N; i++) {
+      const r = document.createElementNS(SVGNS, "rect");
+      const h = 10 + 30 * Math.pow(Math.sin((i + 1) * 1.7) * 0.5 + 0.5, 1.4);
+      r.setAttribute("x", (x0 + i * (bw + gap)).toFixed(1)); r.setAttribute("width", bw);
+      r.setAttribute("y", (455 - h / 2).toFixed(1)); r.setAttribute("height", h.toFixed(1)); r.setAttribute("rx", bw / 2);
+      bars.appendChild(r);
+    }
+    const barEls = $$("rect", bars);
+    const chip = $("[data-chip]", ribbon), chipText = $("[data-chip-text]", ribbon), chipRect = $("rect", chip);
+    const CHIPS = ["Filler removed", "Correction applied", "Number formatted", "Repeat removed"];
+    let chipI = 0, rawLen = 0, cleanLen = 0, off = 0, last = 0, raf = 0, chipT = 0;
+    const placeChip = () => {
+      const w = chipText.getComputedTextLength() + 48;
+      chipRect.setAttribute("width", w.toFixed(1));
+      chip.setAttribute("transform", `translate(${(720 - w / 2).toFixed(1)} 368) rotate(-3 ${(w / 2).toFixed(1)} 15)`);
+    };
+    const layout = () => {
+      const p = phoneMQ.matches ? PATHS.phone : PATHS.wide;
+      raw.setAttribute("d", p.raw); clean.setAttribute("d", p.clean);
+      rawLen = rawTP.parentNode.getComputedTextLength() / 4;
+      cleanLen = cleanTP.parentNode.getComputedTextLength() / 4;
+      placeChip();
+      draw();
+    };
+    const draw = () => {
+      const pr = raw.getTotalLength();
+      // Raw words travel toward the bar; clean words leave it.
+      rawTP.setAttribute("startOffset", (pr - rawLen * 3 + (off % rawLen)).toFixed(1));
+      cleanTP.setAttribute("startOffset", ((off % cleanLen) - cleanLen).toFixed(1));
+    };
+    const frame = (t) => {
+      const dt = last ? Math.min(0.05, (t - last) / 1000) : 0; last = t;
+      off += dt * 46;
+      draw();
+      for (let i = 0; i < barEls.length; i++) {
+        const v = 0.35 + 0.65 * Math.abs(Math.sin(t / 260 + i * 0.9) * Math.sin(t / 610 + i * 0.37));
+        barEls[i].style.transform = `scaleY(${v.toFixed(3)})`;
+      }
+      chipT += dt;
+      if (chipT > 2.6) {
+        chipT = 0; chip.classList.remove("is-on");
+        setTimeout(() => { chipI = (chipI + 1) % CHIPS.length; chipText.textContent = CHIPS[chipI]; placeChip(); chip.classList.add("is-on"); }, 380);
+      }
+      raf = requestAnimationFrame(frame);
+    };
+    const start = () => { if (reduceMQ.matches) return; last = 0; raf = requestAnimationFrame(frame); };
+    const stop = () => cancelAnimationFrame(raf);
+    (document.fonts ? document.fonts.ready : Promise.resolve()).then(() => {
+      layout();
+      chip.classList.add("is-on");
+      whileVisible(ribbon, start, stop);
+    });
+    phoneMQ.addEventListener("change", layout);
+    reduceMQ.addEventListener("change", () => { stop(); if (!reduceMQ.matches) start(); });
+  }
+
+  // ---- Arc text in the scene cards and the language card -------------------------------------------------------
+  function arcRunner(textPath, speed) {
+    let off = 0, last = 0, raf = 0, len = 0;
+    const base = textPath.textContent;
+    textPath.textContent = base.repeat(3);
+    const measure = () => { len = textPath.parentNode.getComputedTextLength() / 3; };
+    const frame = (t) => {
+      const dt = last ? Math.min(0.05, (t - last) / 1000) : 0; last = t;
+      off += dt * speed;
+      if (!len) measure();
+      if (len) textPath.setAttribute("startOffset", (-(off % len)).toFixed(1));
+      raf = requestAnimationFrame(frame);
+    };
+    return {
+      start() { if (reduceMQ.matches) return; last = 0; raf = requestAnimationFrame(frame); },
+      stop() { cancelAnimationFrame(raf); },
+      reset(text) { textPath.textContent = text.repeat(3); len = 0; off = 0; },
+    };
+  }
+
+  // ---- The scroll story: speed cards → portrait card → how it works -------------------------------------------
+  const story = $("[data-story]");
+  const stage = $("[data-stage]");
+  const outCard = $("[data-out]");
+  const card = $("[data-card]");
+  const ci = $("[data-ci]", card), cs = $("[data-cs]", card);
+  const speed = $("[data-speed]");
+  const howTrack = $("[data-how]");
+  const howPin = $(".how-pin", howTrack);
+  const tabs = $$("[data-step-tab]");
+  const steps = $$("[data-step]");
+  const speedSlot = $('[data-slot="speed"]');
+  // The spoken words in step one arrive one at a time, the way the transcript builds while you talk.
+  const tr = $("[data-tr]", card);
+  const walker = document.createTreeWalker(tr, NodeFilter.SHOW_TEXT);
+  const textNodes = [];
+  while (walker.nextNode()) textNodes.push(walker.currentNode);
+  textNodes.forEach((node) => {
+    const frag = document.createDocumentFragment();
+    node.textContent.split(/(\s+)/).forEach((part) => {
+      if (!part) return;
+      if (/^\s+$/.test(part)) { frag.append(part); return; }
+      const w = document.createElement("span"); w.className = "w"; w.textContent = part; frag.append(w);
+    });
+    node.replaceWith(frag);
+  });
+  let arcSeq = 0;
+  const makeScene = (which) => {
+    const c = card.cloneNode(true);
+    c.removeAttribute("data-card");
+    $$("[data-sc]", c).forEach((sc) => sc.classList.toggle("is-on", sc.dataset.sc === which));
+    if (which !== "speed") $$("[data-sc]", c).forEach((sc) => { if (sc.dataset.sc !== which) sc.remove(); });
+    c.classList.toggle("is-step", which !== "speed");
+    const p = $("path[id]", c);
+    if (p) { const id = "arc-c" + ++arcSeq; p.id = id; $("textPath", c).setAttribute("href", "#" + id); }
+    return c;
+  };
+  const clones = { speed: makeScene("speed"), 1: makeScene("1"), 2: makeScene("2"), 3: makeScene("3") };
+  const mainArc = arcRunner($("[data-arc]", card), 52);
+  const cloneArc = arcRunner($("textPath", clones.speed), 52);
+
+  let storyOn = false, geo = null, lastStep = -1, lastScene = "";
+  const setScene = (name) => {
+    if (name === lastScene) return; lastScene = name;
+    $$("[data-sc]", card).forEach((sc) => sc.classList.toggle("is-on", sc.dataset.sc === name));
+    card.classList.toggle("is-step", name !== "speed");
+  };
+  const setStep = (i) => {
+    if (i === lastStep) return; lastStep = i;
+    tabs.forEach((t, j) => t.classList.toggle("is-on", j === i));
+    steps.forEach((s, j) => s.classList.toggle("is-on", j === i));
+  };
+
+  function measureStory() {
+    const V = innerHeight, W = root.clientWidth;
+    speed.style.height = Math.round(V * 3) + "px";
+    const gutter = Math.max(16, W * 0.05);
+    const cw = Math.min(1160, W - 2 * gutter);
+    const x0 = (W - cw) / 2;
+    const cardTop = Math.min(351, Math.max(300, V * 0.39));
+    const cardH = Math.max(320, Math.min(501, V - cardTop - 40));
+    const leftW = Math.round(cw * 0.263);
+    const pw = 405, ph = Math.min(468, V - 160);
+    const y2 = Math.min(368, V - ph - 40);
+    const y3 = Math.max(96, Math.round((V - 467) / 2));
+    const storyTop = story.getBoundingClientRect().top + scrollY;
+    const howTop = howTrack.getBoundingClientRect().top + scrollY;
+    geo = {
+      V, W, storyTop, howTop, howEnd: howTop + howTrack.offsetHeight - V,
+      K0: { x: x0 + leftW + 2, y: cardTop, w: cw - leftW - 2, h: cardH, r: 48 },
+      L0: { x: x0, y: cardTop, w: leftW, h: cardH },
+      K1: { x: x0, y: cardTop, w: cw, h: cardH, r: 48 },
+      K2: { x: (W - pw) / 2, y: y2, w: pw, h: ph, r: 16 },
+      K3: { x: (W - 400) / 2, y: y3, w: 400, h: 467, r: 16 },
+    };
+    howPin.style.setProperty("--card-bottom", y3 + 467 + "px");
+    $(".how-tabs", howPin).style.top = y3 + 8 + "px";
+    outCard.style.width = geo.L0.w + "px"; outCard.style.height = geo.L0.h + "px";
+  }
+  const mix = (a, b, t) => ({ x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t), w: lerp(a.w, b.w, t), h: lerp(a.h, b.h, t), r: lerp(a.r, b.r, t) });
+  function renderStory() {
+    if (!storyOn || !geo) return;
+    const { V, storyTop, howTop, howEnd } = geo;
+    const s = scrollY;
+    const d = s - storyTop; // distance scrolled into the story
+    let r, outOpacity = 0, outShift = 0, labels = 1;
+    const p1 = ease(span(d, 0.35 * V, 1.0 * V));
+    const p3 = ease(span(d, 1.3 * V, 2.0 * V));
+    if (d < 1.3 * V) {
+      r = mix(geo.K0, geo.K1, p1);
+      outOpacity = 1 - p1; outShift = -p1 * 220;
+    } else if (d < 2.0 * V) {
+      r = mix(geo.K1, geo.K2, p3);
+      labels = 1 - span(p3, 0, 0.45);
+    } else {
+      const p4 = ease(span(s, storyTop + 2.0 * V, howTop));
+      r = mix(geo.K2, geo.K3, p4);
+      labels = 0;
+    }
+    const inHow = s > storyTop + 2.0 * V + (howTop - storyTop - 2.0 * V) * 0.55;
+    if (!inHow) setScene("speed");
+    else {
+      const sp = span(s, howTop, howEnd);
+      const i = Math.min(2, Math.floor(sp * 3));
+      setScene(String(i + 1)); setStep(i);
+    }
+    if (!inHow) setStep(0);
+    ci.style.transform = `translate3d(${((r.w - 1160) / 2).toFixed(1)}px, ${((r.h - 501) / 2).toFixed(1)}px, 0)`;
+    cs.style.transform = `translate3d(${((r.w - 400) / 2).toFixed(1)}px, ${((r.h - 467) / 2).toFixed(1)}px, 0)`;
+    card.style.width = r.w.toFixed(1) + "px";
+    card.style.height = r.h.toFixed(1) + "px";
+    card.style.borderRadius = r.r.toFixed(1) + "px";
+    // Coordinates are relative to the sticky layer, which holds still for the whole story.
+    card.style.transform = `translate3d(${r.x.toFixed(1)}px, ${r.y.toFixed(1)}px, 0)`;
+    outCard.style.opacity = outOpacity.toFixed(3);
+    outCard.style.transform = `translate3d(${(geo.L0.x + outShift).toFixed(1)}px, ${geo.L0.y.toFixed(1)}px, 0)`;
+    $$(".sp-label, .sp-num", card).forEach((el) => { el.style.opacity = labels.toFixed(3); });
+  }
+
+  function placeScenes() {
+    if (storyOn) {
+      stage.prepend(outCard);
+      speedSlot.textContent = "";
+      $$("[data-slot]").forEach((slot) => { if (slot !== speedSlot) slot.textContent = ""; });
+      outCard.style.cssText = ""; card.style.cssText = ""; ci.style.transform = ""; cs.style.transform = "";
+    } else {
+      outCard.style.cssText = "";
+      speedSlot.append(outCard, clones.speed);
+      ["1", "2", "3"].forEach((k) => $(`[data-slot="${k}"]`).append(clones[k]));
+      steps.forEach((s) => s.classList.add("is-on"));
+    }
+  }
+  function setMode() {
+    const want = wideMQ.matches && !reduceMQ.matches;
+    root.classList.toggle("no-story", !want);
+    if (want === storyOn && geo) { if (storyOn) { measureStory(); renderStory(); } return; }
+    storyOn = want;
+    if (!storyOn) { speed.style.height = ""; }
+    placeScenes();
+    if (storyOn) { lastStep = -1; lastScene = ""; steps.forEach((s) => s.classList.remove("is-on")); measureStory(); renderStory(); }
+    if (storyOn) exMeasure(); else exReset();
+  }
+  whileVisible(story, () => { mainArc.start(); cloneArc.start(); }, () => { mainArc.stop(); cloneArc.stop(); });
+
+  // ---- Features: the card on the left follows the item in the middle of the screen ------------------------------
+  const feats = $$("[data-feat]");
+  const featsHead = $(".feats-head");
+  new IntersectionObserver((es, ob) => { es.forEach((e) => { if (e.isIntersecting) { featsHead.classList.add("is-in"); ob.disconnect(); } }); }, { threshold: 0.6 }).observe(featsHead);
+  let featOn = -1;
+  function renderFeats() {
+    if (!wideMQ.matches) { feats.forEach((f) => f.classList.add("is-on")); featOn = -2; return; }
+    const mid = innerHeight * 0.55;
+    let on = 0;
+    feats.forEach((f, i) => { const t = $(".feat-text", f).getBoundingClientRect().top; if (t < mid) on = i; });
+    if (on !== featOn) { featOn = on; feats.forEach((f, i) => f.classList.toggle("is-on", i === on)); }
+  }
+  function isNotetakerOn() {
+    const t = $(".feat-text", feats[4]).getBoundingClientRect();
+    return t.top < innerHeight * 0.7 && t.bottom > innerHeight * 0.15;
+  }
+
+  // Feature card loops
+  const LANGS = [
+    ["Deutsch", "de", "Kannst du mir bitte den Bericht bis Freitag schicken? "],
+    ["Français", "fr", "Je pense qu'on devrait reporter le lancement à la semaine prochaine. "],
+    ["Español", "es", "Mañana no puedo ir a la reunión, ¿la podemos mover al jueves? "],
+    ["Italiano", "it", "Allora, ci vediamo alle otto davanti al cinema. "],
+    ["Nederlands", "nl", "Kun je de factuur nog een keer sturen? "],
+    ["Português", "pt", "Eu acho que a gente precisa de mais tempo pra testar. "],
+  ];
+  const langTP = $("[data-lang-text]"), langName = $("[data-lang-name]"), flag = $("[data-flag]");
+  langTP.textContent = LANGS[0][2];
+  const langArc = arcRunner(langTP, 38);
+  const TONES = ["Hey, if you’re free, let’s chat about the great results.", "Hey, if you’re free let’s chat about the great results", "Hey, if you’re free, let’s chat about the great results!"];
+  const LIVE = [
+    ["You", "Okay, let’s start with the beta. Where are we on the crash fix?"],
+    ["Priya", "It’s merged. The build went green this morning, so Thursday works."],
+    ["Speaker 2", "Support wants the release notes a day early."],
+  ];
+  const dictNew = $("[data-dict-new]"), dictField = $("[data-dict-field]");
+  const snip = $("[data-snip]");
+  const tonePills = $$("[data-tone-i]"), toneMsg = $("[data-tone-msg]");
+  const live = $("[data-live]"), liveWho = live.previousElementSibling;
+  let loopT = 0, tick = 0, li = 0, ti = 0, lv = 0, dictStep = 0;
+  function featTick() {
+    tick++;
+    // language: every 4 s
+    if (tick % 8 === 0) {
+      li = (li + 1) % LANGS.length;
+      langName.style.opacity = 0; flag.style.opacity = 0;
+      setTimeout(() => { langName.textContent = LANGS[li][0]; flag.dataset.flag = LANGS[li][1]; langArc.reset(LANGS[li][2]); langName.style.opacity = 1; flag.style.opacity = 1; }, 300);
+    }
+    // snippet: flips every 2 s
+    if (tick % 4 === 0) snip.classList.toggle("is-out");
+    // tone: every 2.5 s
+    if (tick % 5 === 0) { ti = (ti + 1) % 3; tonePills.forEach((p, i) => p.classList.toggle("is-on", i === ti)); toneMsg.textContent = TONES[ti]; }
+    // dictionary: type a name, add it, clear
+    const word = "Aoife";
+    dictStep = (dictStep + 1) % 14;
+    if (dictStep >= 1 && dictStep <= word.length) { dictField.classList.add("is-typing"); dictField.textContent = word.slice(0, dictStep); }
+    else if (dictStep === word.length + 2) { dictNew.textContent = word; dictField.classList.remove("is-typing"); dictField.textContent = "Add a word"; }
+    else if (dictStep === 0) dictNew.textContent = "";
+    // live transcript: words arrive grey, then settle
+    const [who, line] = LIVE[lv];
+    const words = line.split(" ");
+    const shown = Math.min(words.length, (tick % 12) * 2);
+    if (tick % 12 === 0) { lv = (lv + 1) % LIVE.length; }
+    liveWho.textContent = who;
+    live.innerHTML = "";
+    const done = document.createTextNode(words.slice(0, Math.max(0, shown - 2)).join(" ") + " ");
+    const ghost = document.createElement("span"); ghost.className = "ghost"; ghost.textContent = words.slice(Math.max(0, shown - 2), shown).join(" ");
+    live.append(done, ghost);
+  }
+  const featsEl = $("[data-feats]");
+  whileVisible(featsEl, () => { langArc.start(); if (!reduceMQ.matches) loopT = setInterval(featTick, 500); }, () => { langArc.stop(); clearInterval(loopT); });
+
+  // ---- How-it-works: words arrive, chips cycle ------------------------------------------------------------------
+  let wordI = 0, wordTimer = 0;
+  const wordTick = () => {
+    const all = $$("[data-tr]").map((t) => $$(".w", t));
+    const n = all[0].length;
+    wordI = (wordI + 1) % (n + 14);
+    all.forEach((ws) => ws.forEach((w, i) => w.classList.toggle("in", i < wordI)));
+  };
+  if (!reduceMQ.matches) root.classList.add("words");
+  whileVisible(story, () => { if (!reduceMQ.matches) wordTimer = setInterval(wordTick, 150); }, () => clearInterval(wordTimer));
+  // ---- How-it-works chips cycle --------------------------------------------------------------------------------
+  const CHIP_STEPS = [["Filler spotted", "chip-amb"], ["Correction spotted", "chip-cor"], ["Repeat spotted", "chip-pink"]];
+  let chipStep = 0, chipTimer = 0;
+  whileVisible(story, () => {
+    if (reduceMQ.matches) return;
+    chipTimer = setInterval(() => {
+      chipStep = (chipStep + 1) % CHIP_STEPS.length;
+      $$("[data-chip-step]").forEach((c) => { c.textContent = CHIP_STEPS[chipStep][0]; c.className = "chip " + CHIP_STEPS[chipStep][1]; c.setAttribute("data-chip-step", ""); });
+    }, 1800);
+  }, () => clearInterval(chipTimer));
+
+  // ---- Examples: cards travel across on a curve ----------------------------------------------------------------
+  const exTrack = $("[data-ex]"), exRow = $("[data-ex-row]"), exCards = $$(".xc", exRow);
+  let exGeo = null;
+  function exMeasure() {
+    if (!storyOn) return;
+    exRow.style.transform = "";
+    exCards.forEach((c) => { c.style.transform = ""; });
+    const W = root.clientWidth;
+    exRow.style.paddingLeft = Math.round(W * 0.5 - exCards[0].offsetWidth / 2) + "px";
+    const first = exCards[0], lastC = exCards[exCards.length - 1];
+    const centers = exCards.map((c) => c.offsetLeft + c.offsetWidth / 2);
+    const start = first.offsetLeft + first.offsetWidth / 2 - W / 2;
+    const end = lastC.offsetLeft + lastC.offsetWidth / 2 - W / 2;
+    const top = exTrack.getBoundingClientRect().top + scrollY;
+    exGeo = { W, centers, start, end, top, len: exTrack.offsetHeight - innerHeight };
+    renderEx();
+  }
+  function exReset() { exGeo = null; exRow.style.transform = ""; exRow.style.paddingLeft = ""; exCards.forEach((c) => { c.style.transform = ""; }); }
+  function renderEx() {
+    if (!storyOn || !exGeo) return;
+    const { W, centers, start, end, top, len } = exGeo;
+    const p = span(scrollY, top, top + len);
+    const shift = lerp(start, end, p);
+    exRow.style.transform = `translate3d(${(-shift).toFixed(1)}px,0,0)`;
+    exCards.forEach((c, i) => {
+      const dd = (centers[i] - shift - W / 2) / (W / 2);
+      const a = clamp(dd, -2.2, 2.2);
+      c.style.transform = `translate3d(0, ${(Math.abs(a) * 36).toFixed(1)}px, ${(-Math.abs(a) * 120).toFixed(1)}px) rotateY(${(-a * 24).toFixed(2)}deg) rotateZ(${(a * 3).toFixed(2)}deg)`;
+    });
+  }
+
+  // ---- FAQ ----------------------------------------------------------------------------------------------------
+  const faq = $("[data-faq]");
+  const qButtons = $$(".faq-list button", faq);
+  const chat = $("[data-faq-chat]"), ask = $("[data-faq-ask]"), ans = $("[data-faq-ans]");
+  const list = $(".faq-list", faq), scrollBox = $(".faq-scroll", faq);
+  const showAnswer = (btn) => {
+    ask.textContent = btn.textContent;
+    ans.innerHTML = $("#" + btn.getAttribute("aria-controls")).innerHTML;
+    chat.classList.remove("is-swap"); void chat.offsetWidth; chat.classList.add("is-swap");
+  };
+  const select = (btn, toggle) => {
+    const open = btn.getAttribute("aria-expanded") === "true";
+    if (phoneMQ.matches && toggle && open) { btn.setAttribute("aria-expanded", "false"); $("#" + btn.getAttribute("aria-controls")).hidden = true; return; }
+    qButtons.forEach((b) => {
+      const on = b === btn;
+      b.setAttribute("aria-expanded", String(on));
+      $("#" + b.getAttribute("aria-controls")).hidden = !on;
+    });
+    showAnswer(btn);
+  };
+  qButtons.forEach((b) => b.addEventListener("click", () => select(b, true)));
+  const fades = () => {
+    const max = list.scrollHeight - list.clientHeight;
+    scrollBox.style.setProperty("--fade-top", clamp(list.scrollTop / 40, 0, 1).toFixed(2));
+    scrollBox.style.setProperty("--fade-bot", clamp((max - list.scrollTop) / 40, 0, 1).toFixed(2));
+  };
+  list.addEventListener("scroll", fades, { passive: true });
+  fades();
+  $$("[data-faq-open]").forEach((a) => a.addEventListener("click", () => {
+    const b = qButtons[+a.dataset.faqOpen - 1];
+    if (b) { select(b, false); setTimeout(() => b.focus({ preventScroll: true }), 50); }
+  }));
+
+  // ---- Scroll + resize --------------------------------------------------------------------------------------
+  let sTick = false;
+  const onScroll = () => {
+    if (sTick) return; sTick = true;
+    requestAnimationFrame(() => {
+      sTick = false;
+      renderStory(); renderEx(); renderFeats();
+      setSeg(isNotetakerOn() ? "notetaker" : "dictation");
+    });
+  };
+  addEventListener("scroll", onScroll, { passive: true });
+  let rT = 0, lastW = root.clientWidth, lastH = innerHeight;
+  addEventListener("resize", () => {
+    clearTimeout(rT);
+    rT = setTimeout(() => {
+      // Phones resize the viewport as the toolbar hides; only re-measure for real changes.
+      if (root.clientWidth === lastW && Math.abs(innerHeight - lastH) < 120 && !storyOn) return;
+      lastW = root.clientWidth; lastH = innerHeight;
+      setMode(); if (storyOn) { measureStory(); exMeasure(); } renderStory(); renderFeats();
+    }, 120);
+  });
+  wideMQ.addEventListener("change", setMode);
+  reduceMQ.addEventListener("change", setMode);
+  setMode();
+  renderFeats();
+  (document.fonts ? document.fonts.ready : Promise.resolve()).then(() => { if (storyOn) { measureStory(); exMeasure(); renderStory(); } });
+  addEventListener("load", () => { if (storyOn) { measureStory(); exMeasure(); renderStory(); } });
 })();
