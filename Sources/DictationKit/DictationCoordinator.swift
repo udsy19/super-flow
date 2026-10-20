@@ -49,6 +49,9 @@ public final class DictationCoordinator: DictationControlling {
     /// The last text when it isn't in History (History is off, or saving failed): paste-last and copy-last use it.
     private var lastUnsavedText: String?
     private var reportedCleanupLoadFailure = false
+    /// The chosen cleanup model whose last load threw (installed but unloadable): Command Mode and transforms say so
+    /// instead of "getting ready". Cleared by a load that succeeds or a "Try again".
+    private var cleanupLoadFailedID: String?
     private var reportedSpeechLoadFailure = false
 
     public init() {}
@@ -119,17 +122,53 @@ public final class DictationCoordinator: DictationControlling {
             // Rules only: nothing to load, and a model chosen earlier lets go of its memory.
             guard let cleanup = Defaults[.cleanupModelID] else { return Services.cleanup.unload(role: .cleanup) }
             if Services.models.state(of: cleanup) == .installed, !Services.cleanup.isModelReady(for: .cleanup) {
-                do { try await Services.cleanup.prepare(modelID: cleanup, role: .cleanup) } catch {
-                    Log.app.error("Cleanup model not ready: \(error.localizedDescription, privacy: .public)")
-                    // Installed but it won't load (a damaged file, too little memory): dictation keeps working on the
-                    // rules alone; say so once rather than quietly writing rougher text.
-                    let missing: Bool = { if case .modelNotInstalled? = error as? SpeechError { return true } else { return false } }()
-                    if !missing, !self.reportedCleanupLoadFailure {
-                        self.reportedCleanupLoadFailure = true
-                        Services.flowBar.show(DictationNotices.cleanupModelFailed()) { _ in Services.hub.showSettings(.models) }
-                    }
-                }
+                await self.loadCleanupModel(cleanup)
             }
+        }
+    }
+
+    /// Loads the chosen cleanup model, remembering a failure for `cleanupModelProblem()`.
+    private func loadCleanupModel(_ id: String) async {
+        do {
+            try await Services.cleanup.prepare(modelID: id, role: .cleanup)
+            if cleanupLoadFailedID == id { cleanupLoadFailedID = nil }
+        } catch {
+            Log.app.error("Cleanup model not ready: \(error.localizedDescription, privacy: .public)")
+            // Installed but it won't load (a damaged file, too little memory): dictation keeps working on the
+            // rules alone; say so once rather than quietly writing rougher text.
+            let missing: Bool = { if case .modelNotInstalled? = error as? SpeechError { return true } else { return false } }()
+            guard !missing else { return }
+            cleanupLoadFailedID = id
+            if !reportedCleanupLoadFailure {
+                reportedCleanupLoadFailure = true
+                Services.flowBar.show(DictationNotices.cleanupModelFailed()) { _ in Services.hub.showSettings(.models) }
+            }
+        }
+    }
+
+    /// Why the chosen cleanup model isn't coming, or nil while it is still downloading or loading (or on Rules only).
+    private func cleanupModelProblem() -> DictationNotices.CleanupModelProblem? {
+        guard let id = Defaults[.cleanupModelID] else { return nil }
+        switch Services.models.state(of: id) {
+        case .installed: return cleanupLoadFailedID == id ? .other : nil
+        case .downloading: return nil
+        case .damaged: return .damaged
+        case .notDownloaded, .paused:
+            if case .waitingForDisk = Services.models.autoDownloadStatus { return .notEnoughSpace }
+            return Services.models.readiness(of: id) == nil ? .other : nil
+        }
+    }
+
+    /// "Try again" on `cleanupModelUnavailable`: loads an installed model again, otherwise queues its download (the
+    /// install then loads it).
+    private func retryCleanupModel() {
+        guard let id = Defaults[.cleanupModelID] else { return }
+        if Services.models.state(of: id) == .installed {
+            cleanupLoadFailedID = nil
+            Task { @MainActor [weak self] in await self?.loadCleanupModel(id) }
+        } else {
+            let progress = Services.models.download(id)
+            Task { do { for try await _ in progress {} } catch { Log.app.error("Cleanup model download: \(error.localizedDescription, privacy: .public)") } }
         }
     }
 
@@ -532,7 +571,7 @@ public final class DictationCoordinator: DictationControlling {
             }
         } catch {
             guard self.session === session else { return }
-            fail(session, with: DictationNotices.transformFailed(error))
+            fail(session, with: DictationNotices.transformFailed(error, problem: cleanupModelProblem()))
         }
     }
 
@@ -577,11 +616,14 @@ public final class DictationCoordinator: DictationControlling {
         }
     }
 
-    /// A failure card's button: "Open Settings" is the microphone pane, except on the no-cleanup-model card (Models).
+    /// A failure card's button: "Open Settings" is the microphone pane, except on the cleanup-model cards (Models).
     private func perform(_ action: String, on notice: FlowBarNotification) {
+        let modelCard = [DictationNotices.noCleanupModelID, DictationNotices.cleanupModelUnavailableID].contains(notice.id)
         switch action {
-        case DictationNotices.openSettings where notice.id == DictationNotices.noCleanupModelID, DictationNotices.openModels:
+        case DictationNotices.openSettings where modelCard, DictationNotices.openModels:
             Services.hub.showSettings(.models)
+        case DictationNotices.tryAgain where notice.id == DictationNotices.cleanupModelUnavailableID:
+            retryCleanupModel()
         case DictationNotices.openSettings: Permissions.open(.microphone)
         case DictationNotices.openHistory: Services.hub.show(.history)
         default: break
@@ -637,7 +679,7 @@ public final class DictationCoordinator: DictationControlling {
                 Services.flowBar.setState(.transformCompleted)
             } catch {
                 Services.flowBar.setState(.error)
-                let notice = DictationNotices.transformFailed(error)
+                let notice = DictationNotices.transformFailed(error, problem: self?.cleanupModelProblem())
                 Services.flowBar.show(notice) { [weak self] action in self?.perform(action, on: notice) }
                 Services.audio.play(.notificationError)
             }

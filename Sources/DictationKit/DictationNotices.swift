@@ -8,6 +8,7 @@ enum DictationNotices {
     static let openHistory = "Open History"
     static let openModels = "Open Models"
     static let turnOn = "Turn on"
+    static let tryAgain = "Try again"
 
     static func noSpeechModel() -> FlowBarNotification {
         FlowBarNotification(id: "dictation.noModel", title: "No speech model yet",
@@ -179,11 +180,36 @@ enum DictationNotices {
                             variant: .error, timeout: nil, actions: [openSettings])
     }
 
-    /// `cleanupModelChosen` false (Rules only) turns "model not ready" into `noCleanupModel()`; with a model chosen it
-    /// is still downloading or loading, so the "getting ready" notice stays.
-    static func transformFailed(_ error: Error, cleanupModelChosen: Bool = Defaults[.cleanupModelID] != nil) -> FlowBarNotification {
+    static let cleanupModelUnavailableID = "transform.cleanupModelFailed"
+
+    /// Why a chosen cleanup model isn't coming: nothing is downloading or loading it any more.
+    enum CleanupModelProblem: Equatable {
+        case notEnoughSpace, damaged, other
+
+        var explanation: String {
+            switch self {
+            case .notEnoughSpace: "Not enough disk space."
+            case .damaged: "The download was damaged."
+            case .other: "Something went wrong loading it."
+            }
+        }
+    }
+
+    /// Command Mode or a transform needed the chosen cleanup model, but its download or load failed: "getting ready"
+    /// would never resolve. "Try again" queues the download or load again; "Open Settings" opens the Models page.
+    static func cleanupModelUnavailable(_ problem: CleanupModelProblem) -> FlowBarNotification {
+        FlowBarNotification(id: cleanupModelUnavailableID, title: "Couldn't load the cleanup model", subtitle: problem.explanation,
+                            variant: .error, timeout: nil, actions: [tryAgain, openSettings])
+    }
+
+    /// `cleanupModelChosen` false (Rules only) turns "model not ready" into `noCleanupModel()`; with a model chosen whose
+    /// download or load failed (`problem`) it is `cleanupModelUnavailable`; otherwise it is still downloading or
+    /// loading, so the "getting ready" notice stays.
+    static func transformFailed(_ error: Error, cleanupModelChosen: Bool = Defaults[.cleanupModelID] != nil,
+                                problem: CleanupModelProblem? = nil) -> FlowBarNotification {
         let transform = error as? TransformError
         if transform == .modelNotReady, !cleanupModelChosen { return noCleanupModel() }
+        if transform == .modelNotReady, let problem { return cleanupModelUnavailable(problem) }
         return FlowBarNotification(id: "transform.failed", title: error.localizedDescription,
                                    subtitle: transform?.recoverySuggestion, variant: transform == .modelNotReady ? .alert : .error)
     }

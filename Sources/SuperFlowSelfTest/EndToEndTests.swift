@@ -268,10 +268,15 @@ private func endToEndAutoLearn() {
 
 @MainActor private final class E2EModels: ModelManaging {
     var catalog: [ModelDescriptor] { ModelCatalog.all }
-    func state(of id: String) -> ModelState { .installed }
+    var states: [String: ModelState] = [:]
+    func state(of id: String) -> ModelState { states[id] ?? .installed }
     var locations: [String: URL] = [:]
     func location(of id: String) -> URL? { locations[id] }
-    func download(_ id: String) -> AsyncThrowingStream<DownloadProgress, Error> { AsyncThrowingStream { $0.finish() } }
+    var downloads: [String] = []
+    func download(_ id: String) -> AsyncThrowingStream<DownloadProgress, Error> {
+        downloads.append(id)
+        return AsyncThrowingStream { $0.finish() }
+    }
     func pause(_ id: String) {}
     func delete(_ id: String) throws {}
     func importModel(_ id: String, from file: URL) async throws {}
@@ -280,8 +285,9 @@ private func endToEndAutoLearn() {
     func startAutomaticDownloads() {}
     var busy: [Bool] = []
     func setUserBusy(_ busy: Bool) { self.busy.append(busy) }
-    var autoDownloadStatus: AutoDownloadStatus { .upToDate }
-    func readiness(of id: String) -> Double? { nil }
+    var autoDownloadStatus: AutoDownloadStatus = .upToDate
+    var readinesses: [String: Double] = [:]
+    func readiness(of id: String) -> Double? { readinesses[id] }
 }
 
 /// Swaps every service the coordinator touches for one test and puts the previous ones back.
@@ -466,8 +472,36 @@ private func e2eWords(_ text: String) -> String { text.lowercased().components(s
     services.flowBar.click("transform.noCleanupModel", "Open Settings")
     check(services.hub.panes == [.models, .models], "the transform card opens Settings › Models too")
     Defaults[.cleanupModelID] = ModelCatalog.qwen35_2B.id
-    check(transform { $0?.id == "transform.failed" && $0?.title == "Just a moment - Super Flow is getting ready..." && $0?.variant == .alert },
-          "a chosen model still loading keeps getting ready (\(String(describing: services.flowBar.notifications.last)))")
+    let gettingReady = { (card: FlowBarNotification?) in
+        card?.id == "transform.failed" && card?.title == "Just a moment - Super Flow is getting ready..." && card?.variant == .alert
+    }
+    check(transform(gettingReady), "a chosen model still loading keeps getting ready (\(String(describing: services.flowBar.notifications.last)))")
+
+    // A chosen model whose download failed: a card names why, "Try again" queues it again, "Open Settings" opens Models.
+    // "Getting ready" stays only while it is actually downloading or queued.
+    let qwen = ModelCatalog.qwen35_2B.id
+    let models = Services.models as! E2EModels
+    let couldNotLoad = { (reason: String) in { (card: FlowBarNotification?) in
+        card?.id == "transform.cleanupModelFailed" && card?.title == "Couldn't load the cleanup model" && card?.subtitle == reason
+            && card?.variant == .error && card?.actions == ["Try again", "Open Settings"]
+    } }
+    models.states[qwen] = .damaged
+    check(transform(couldNotLoad("The download was damaged.")), "damaged download card (\(String(describing: services.flowBar.notifications.last)))")
+    services.flowBar.click("transform.cleanupModelFailed", "Try again")
+    check(models.downloads == [qwen], "Try again queues the download again: \(models.downloads)")
+    services.flowBar.click("transform.cleanupModelFailed", "Open Settings")
+    check(services.hub.panes == [.models, .models, .models], "the failure card opens Settings › Models")
+    models.states[qwen] = .notDownloaded
+    models.autoDownloadStatus = .waitingForDisk(freeBytes: 1_000)
+    check(transform(couldNotLoad("Not enough disk space.")), "disk full card (\(String(describing: services.flowBar.notifications.last)))")
+    models.autoDownloadStatus = .upToDate
+    check(transform(couldNotLoad("Something went wrong loading it.")), "a download that stopped gets the generic card")
+    models.readinesses[qwen] = 0.2
+    check(transform(gettingReady), "queued for download keeps getting ready")
+    models.readinesses[qwen] = nil
+    models.states[qwen] = .downloading(fraction: 0.4)
+    check(transform(gettingReady), "downloading keeps getting ready")
+    models.states[qwen] = nil
     Defaults[.cleanupModelID] = nil
 
     // Esc with nothing running closes cards; paste-last re-inserts the last transcript.
@@ -582,6 +616,20 @@ private func e2eWords(_ text: String) -> String { text.lowercased().components(s
     defer { second.restore() }
     second.coordinator.activate()
     check(e2eWait(20) { second.flowBar.notifications.contains { $0.id == "dictation.cleanupModel" } }, "a card says the cleanup model didn't load")
+    // A transform then says the model couldn't load instead of "getting ready"; "Try again" loads it again.
+    second.inserter.selection = "fix this text"
+    second.hotkeys.send(.pressed(.transform, KeyChord(1)))
+    let loadFailed = { (card: FlowBarNotification?) in
+        card?.id == "transform.cleanupModelFailed" && card?.subtitle == "Something went wrong loading it." && card?.actions == ["Try again", "Open Settings"]
+    }
+    check(e2eWait { loadFailed(second.flowBar.notifications.last) }, "load failure card (\(String(describing: second.flowBar.notifications.last)))")
+    let shownBefore = second.flowBar.notifications.count
+    second.flowBar.click("transform.cleanupModelFailed", "Try again")
+    RunLoop.main.run(until: Date().addingTimeInterval(DictationLimits.completedStateDuration + 0.2))
+    check(models.downloads.isEmpty && second.flowBar.notifications.count == shownBefore, "Try again reloads the installed model, no second load card")
+    second.hotkeys.send(.pressed(.transform, KeyChord(1)))
+    check(e2eWait { second.flowBar.notifications.count > shownBefore && loadFailed(second.flowBar.notifications.last) },
+          "still unloadable: the card again")
     check(second.flowBar.notifications.contains { $0.id == "dictation.speechModel" && $0.variant == .error },
           "a card says the speech model didn't load and that nothing else can stand in")
 }
