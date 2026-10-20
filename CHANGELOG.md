@@ -4,7 +4,7 @@ All notable changes to Super Flow are recorded here. The format follows Keep a C
 
 ## [Unreleased]
 
-## [1.0.0] - 2026-10-19
+## [1.0.0] - 2026-10-20
 
 ### Added
 - Live meeting transcript: what is being said shows on the meeting page within a couple of seconds, in grey until
