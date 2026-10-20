@@ -15,7 +15,7 @@
 <meta property="og:title" content="Super Flow — say it out loud, see it written">
 <meta property="og:description" content="Free, open-source dictation and meeting notes for macOS. Every model runs on your Mac: no account, no cloud, no API keys.">
 <meta property="og:url" content="https://udsy19.github.io/super-flow/">
-<meta property="og:image" content="https://udsy19.github.io/super-flow/og.png">
+<meta property="og:image" content="https://udsy19.github.io/super-flow/og.png?v=46eae556">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="Super Flow: a waveform, the words it heard, and the clean text it typed.">
@@ -23,7 +23,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400&family=Figtree:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@500;700&display=swap">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=ddea2df6">
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
@@ -32,6 +32,8 @@
   <symbol id="i-down" viewBox="0 0 16 16"><path d="M8 2.5v8M4.5 7.2 8 10.7l3.5-3.5M3 13.5h10" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></symbol>
   <symbol id="i-chev" viewBox="0 0 16 16"><path d="m6 3.5 4.5 4.5L6 12.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
   <symbol id="i-mark" viewBox="0 0 66 58"><rect x="0" y="14" width="8.5" height="30" rx="4.25"/><rect x="14" y="6" width="8.5" height="46" rx="4.25"/><rect x="28" y="0" width="8.5" height="58" rx="4.25"/><rect x="42" y="6" width="8.5" height="46" rx="4.25"/><rect x="56" y="14" width="8.5" height="30" rx="4.25"/></symbol>
+  <symbol id="i-arrow" viewBox="0 0 16 9"><path d="M1 4.6c4.1.1 8.3-.1 12.6-.2M10 1.2c1.4 1 2.9 2.1 4.2 3.2-1.4 1.1-2.8 2.2-4 3.4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-x" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
   <symbol id="i-gh" viewBox="0 0 16 16"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></symbol>
 </svg>
 
@@ -55,7 +57,7 @@
       <a href="#faq">FAQ</a>
     </nav>
     <a class="btn btn-nav" href="https://github.com/udsy19/super-flow/releases/latest/download/SuperFlow.dmg"><svg class="ic" aria-hidden="true"><use href="#i-down"/></svg><span class="lg">Download for Mac</span><span class="sm">Download</span></a>
-    <button type="button" class="burger" aria-expanded="false" aria-controls="menu" data-burger><span class="sr-only">Menu</span><i></i><i></i></button>
+    <button type="button" class="burger" aria-expanded="false" aria-controls="menu" data-burger><span class="sr-only">Menu</span><i></i><i></i><i></i></button>
   </div>
   <nav class="menu" id="menu" aria-label="Menu" hidden data-menu>
     <a href="#top">Dictation</a>
@@ -88,10 +90,12 @@
           <rect class="rb-pill-bg" x="652" y="420" width="136" height="70" rx="35"/>
           <g class="rb-bars" data-bars></g>
         </g>
-        <g class="rb-chip" data-chip>
-          <rect x="0" y="0" width="120" height="30" rx="15"/>
-          <path class="rb-tick" d="M14 15.5l4 4 8-8.5"/>
-          <text x="34" y="20" data-chip-text>Filler removed</text>
+        <text class="rb-word" x="720" y="392" text-anchor="middle" data-word></text>
+        <line class="rb-strike" x1="700" y1="386" x2="740" y2="386" data-strike/>
+        <g class="rb-toast" data-toast>
+          <rect class="rt-bg" x="-17" y="-17" width="34" height="34" rx="17" data-toast-bg/>
+          <path class="rt-tick" d="M-6 0.5l3.6 3.6 7.4-7.6" data-toast-tick/>
+          <text class="rt-text" y="5" data-toast-text></text>
         </g>
       </svg>
     </div>
@@ -112,45 +116,63 @@
   <div class="story" data-story>
     <div class="stage-wrap" aria-hidden="true"><div class="stage" data-stage>
       <div class="card-out" data-out>
-        <p class="co-label">Cleanup, median</p>
-        <p class="co-num">0.13 s</p>
-        <p class="co-tick"><span>rules and Qwen3.5 2B on an M4 Pro · rules and Qwen3.5 2B on an M4 Pro · </span></p>
+        <div class="co-in" data-co-in>
+          <p class="co-label">Cleanup, median</p>
+          <p class="co-num">0.13 s</p>
+          <p class="co-tick"><span>rules and Qwen3.5 2B on an M4 Pro · rules and Qwen3.5 2B on an M4 Pro · </span></p>
+        </div>
       </div>
       <div class="card-scene" data-card>
-        <div class="ci" data-ci>
-        <div class="scene-bg"><i></i><i></i><i></i><i></i></div>
+        <div class="scene-bg" data-bg="0"><i></i><i></i><i></i><i></i></div>
+        <div class="scene-bg sb-1" data-bg="1"><i></i><i></i><i></i><i></i></div>
+        <div class="scene-bg sb-2" data-bg="2"><i></i><i></i><i></i><i></i></div>
 
-        <div class="sc sc-speed is-on" data-sc="speed">
-          <p class="sp-label">Key release to text</p>
-          <p class="sp-num">0.8 s</p>
-          <svg class="sp-arc" viewBox="0 0 1160 500" preserveAspectRatio="xMidYMid slice">
-            <path id="arc" d="M-200 360 Q 580 60 1360 360" fill="none"/>
-            <text><textPath href="#arc" data-arc>Move the standup to 10:30. Can you send me the slides from yesterday? Tell Mike that the build is green. We need 1,500 units by Q4. Book a table for five people. </textPath></text>
-          </svg>
-          <span class="fbar fbar-sm"><span class="fw"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span></span>
-        </div>
+        <div class="ci" data-ci>
+          <div class="sc-speed" data-intro>
+            <p class="sp-label">Key release to text</p>
+            <p class="sp-num">0.8 s</p>
+            <svg class="sp-arc" viewBox="0 0 1160 500" preserveAspectRatio="xMidYMid slice">
+              <path id="arc" d="M-200 360 Q 580 60 1360 360" fill="none"/>
+              <text><textPath href="#arc" data-arc>Move the standup to 10:30. Can you send me the slides from yesterday? Tell Mike that the build is green. We need 1,500 units by Q4. Book a table for five people. </textPath></text>
+            </svg>
+          </div>
         </div>
 
         <div class="cs" data-cs>
-        <div class="sc sc-step sc-1" data-sc="1">
-          <p class="tr" data-tr><span>Hey, quick update on the migration. We moved the user table on Monday, the orders table on Tuesday, and,</span> <b class="m-amb">uh,</b> <b class="m-cor">we were going to do payments on Wednesday, but scratch that,</b> <span>we’re holding payments until the audit is done.</span></p>
-          <div class="composer"><p class="cm-text"><span class="cm-ph">Message #launch</span></p><div class="cm-tools"><i class="t-plus"></i><i class="t-aa">Aa</i><i class="t-emo"></i><i class="t-more"></i><i class="t-send"></i></div></div>
-          <span class="chip chip-amb" data-chip-step>Filler spotted</span>
-          <span class="fbar fbar-hf"><span class="fb-x"></span><span class="fw"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span><span class="fb-ok"></span></span>
+          <div class="scr" data-screen>
+            <div class="dest" data-dest-row>
+              <span class="dest-i" data-dest="chat"><i class="dg-chat"></i></span>
+              <span class="dest-i" data-dest="mail"><i class="dg-mail"></i></span>
+              <span class="dest-i" data-dest="term"><i class="dg-term">&gt;_</i></span>
+            </div>
+            <div class="tr-wrap" data-raw-wrap>
+              <p class="tr" data-tr>Hey, quick update on the migration. We moved the user table on Monday, the orders table on Tuesday, and, <b class="m-amb" data-cat="filler">uh,</b> <b class="m-cor" data-cat="correction">we were going to do payments on Wednesday, but scratch that,</b> we’re holding payments until the audit is done.</p>
+            </div>
+            <div class="fan" data-fan>
+              <div class="composer" data-composer data-dest="chat">
+                <i class="cm-card" data-cm-card></i>
+                <div class="cm-clip" data-cm-clip>
+                  <div class="cm-box" data-msg><p class="cm-ph">Message #launch</p><p class="cm-text" data-polished>Hey, quick update on the migration. We moved the user table on Monday and the orders table on Tuesday. We’re holding payments until the audit is done.</p></div>
+                  <div class="cm-tools"><i class="t-plus"></i><i class="t-aa">Aa</i><i class="t-emo"></i><i class="t-more"></i><i class="t-send"></i></div>
+                </div>
+              </div>
+              <div class="composer fan-card fc-mail" data-dest="mail">
+                <div class="cm-box"><p class="cm-text">Hi Sarah,<br><br>Thanks for sending the deck over. I’ll review it tonight and get back to you tomorrow.<br><br>Best,<br>John</p></div>
+                <div class="cm-tools"><b class="t-btn">Send</b><i class="t-aa">Aa</i><i class="t-emo"></i><i class="t-more"></i></div>
+              </div>
+              <div class="composer fan-card fc-term" data-dest="term">
+                <div class="cm-box"><p class="cm-text"><span class="t-prompt">~ %</span> npm install --save-dev typescript<span class="t-caret"></span></p></div>
+              </div>
+            </div>
+          </div>
+          <div class="pills" data-pills>
+            <span class="pill pill-amb" data-pill="filler"><span class="pill-t">Filler spotted</span></span>
+            <span class="pill pill-cor" data-pill="correction"><span class="pill-t">Correction spotted</span></span>
+            <span class="pill pill-pol" data-pill="polishing"><span class="pp-in"><span class="pill-t">Cleaning up…</span><i class="pp-spin"></i></span><span class="pp-dots"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span></span>
+          </div>
         </div>
 
-        <div class="sc sc-step sc-2" data-sc="2">
-          <p class="tr tr-clean"><span>Hey, quick update on the migration. We moved the user table on Monday</span> <s>, the orders table</s> <b class="m-add">and the orders table</b> <span>on Tuesday,</span> <s class="m-amb">and, uh,</s> <s class="m-cor">we were going to do payments on Wednesday, but scratch that,</s> <span>We’re holding payments until the audit is done.</span></p>
-          <div class="composer"><p class="cm-text"><span class="cm-ph">Message #launch</span></p><div class="cm-tools"><i class="t-plus"></i><i class="t-aa">Aa</i><i class="t-emo"></i><i class="t-more"></i><i class="t-send"></i></div></div>
-          <span class="fbar fbar-clean"><span class="fb-spin"></span>Cleaning up…</span>
-        </div>
-
-        <div class="sc sc-step sc-3" data-sc="3">
-          <span class="app-glyph"><i></i></span>
-          <div class="composer composer-full"><p class="cm-text">Hey, quick update on the migration. We moved the user table on Monday and the orders table on Tuesday. We’re holding payments until the audit is done.</p><div class="cm-tools"><i class="t-plus"></i><i class="t-aa">Aa</i><i class="t-emo"></i><i class="t-more"></i><i class="t-send"></i></div></div>
-          <span class="fbar fbar-sm"><span class="fw"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span></span>
-        </div>
-        </div>
+        <span class="fbar fbar-audio" data-audio><span class="fb-x" data-extra></span><span class="fw"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span><span class="fb-ok" data-extra></span></span>
       </div>
     </div></div>
 
@@ -169,11 +191,14 @@
       </header>
       <div class="how-track" data-how>
         <div class="how-pin">
-          <svg class="swoosh" viewBox="0 0 1440 900" preserveAspectRatio="none" aria-hidden="true"><path d="M-120 760 C 120 560 330 600 470 720 S 760 980 900 700 S 1080 180 1300 230 S 1560 520 1600 420"/></svg>
-          <ol class="how-tabs" aria-label="Steps">
-            <li class="is-on" data-step-tab="0">Hold fn and talk</li>
-            <li data-step-tab="1">Cleaned as it lands</li>
-            <li data-step-tab="2">Works in any app</li>
+          <svg class="swoosh" viewBox="0 0 1440 900" preserveAspectRatio="none" aria-hidden="true">
+            <path data-tab-bg="0" d="M-120 760 C 120 560 330 600 470 720 S 760 980 900 700 S 1080 180 1300 230 S 1560 520 1600 420"/>
+            <path data-tab-bg="1" d="M-140 330 C 80 180 300 220 380 420 S 560 900 840 860 S 1120 520 1260 640 S 1480 900 1620 780"/>
+          </svg>
+          <ol class="how-tabs" aria-label="Steps" data-tabs>
+            <li><button type="button" class="is-on" aria-current="step" data-step-tab="0">Hold fn and talk</button></li>
+            <li><button type="button" data-step-tab="1">Cleaned as it lands</button></li>
+            <li><button type="button" data-step-tab="2">Works in any app</button></li>
           </ol>
           <div class="how-steps">
             <article class="how-step is-on" data-step="0">
@@ -221,8 +246,8 @@
           <div class="dict">
             <p class="dict-h">Add to dictionary</p>
             <div class="dict-chips"><span>Siobhan</span><span>kubectl</span><span>SwiftPM</span><span class="dict-new" data-dict-new></span></div>
-            <div class="dict-in"><span class="dict-field" data-dict-field>Add a word</span><span class="dict-add">Add</span></div>
-            <p class="dict-row">Learn from my edits<span class="tg tg-on"></span></p>
+            <div class="dict-in"><span class="dict-field" data-dict-field>Add a word</span><span class="dict-add" data-dict-add>Add</span></div>
+            <p class="dict-row">Learn from my edits<span class="tg" data-dict-tg></span></p>
             <p class="dict-row">Replace “cube control” with “kubectl”<span class="tg tg-on"></span></p>
           </div>
         </div>
@@ -234,7 +259,7 @@
 
       <div class="feat" data-feat="2">
         <div class="feat-card fc-snip" aria-hidden="true">
-          <p class="snip-line"><span>Thanks again,</span><span class="snip-slot" data-snip><span class="snip-say">“my sign off”</span><span class="snip-out">Best, Alex Kim · Head of Product</span></span></p>
+          <p class="snip-line" data-snip-line><span>Thanks again,</span><span class="snip-slot" data-snip><span class="snip-say" data-snip-say>“my sign off”</span><span class="snip-out" data-snip-out>Best, Alex Kim · Head of Product</span></span></p>
         </div>
         <div class="feat-text">
           <h3 class="h-3">Snippets for what you repeat</h3>
@@ -245,7 +270,7 @@
       <div class="feat" data-feat="3">
         <div class="feat-card fc-tone" aria-hidden="true" data-tone>
           <div class="tone-pills"><span class="is-on" data-tone-i="0">Formal</span><span data-tone-i="1">Casual</span><span data-tone-i="2">Excited</span></div>
-          <p class="tone-msg" data-tone-msg>Hey, if you’re free, let’s chat about the great results.</p>
+          <div class="tone-msg" data-tone-box><p data-tone-msg="0">Hey, if you’re free, let’s chat about the great results.</p><p data-tone-msg="1">Hey, if you’re free let’s chat about the great results</p><p data-tone-msg="2">Hey, if you’re free, let’s chat about the great results!</p></div>
         </div>
         <div class="feat-text">
           <h3 class="h-3">A tone for every app</h3>
@@ -450,35 +475,35 @@
 
   <div class="cols">
     <div><p class="eyebrow eyebrow-50">Get started</p><ul>
-      <li><a href="https://github.com/udsy19/super-flow/releases/latest/download/SuperFlow.dmg">Download for Mac</a></li>
-      <li><a href="#get">Install from Terminal</a></li>
-      <li><a href="#faq" data-faq-open="6">Open Anyway help</a></li>
-      <li><a href="#faq" data-faq-open="3">Requirements</a></li>
+      <li><a href="https://github.com/udsy19/super-flow/releases/latest/download/SuperFlow.dmg"><span>Download for Mac</span><svg class="fl-ic" aria-hidden="true"><use href="#i-arrow"/></svg></a></li>
+      <li><a href="#get"><span>Install from Terminal</span><svg class="fl-ic" aria-hidden="true"><use href="#i-arrow"/></svg></a></li>
+      <li><a href="#faq" data-faq-open="6"><span>Open Anyway help</span><svg class="fl-ic" aria-hidden="true"><use href="#i-arrow"/></svg></a></li>
+      <li><a href="#faq" data-faq-open="3"><span>Requirements</span><svg class="fl-ic" aria-hidden="true"><use href="#i-arrow"/></svg></a></li>
     </ul></div>
     <div><p class="eyebrow eyebrow-50">Product</p><ul>
-      <li><a href="#how">How it works</a></li>
-      <li><a href="#features">Languages and styles</a></li>
-      <li><a href="#notetaker">Notetaker</a></li>
-      <li><a href="#privacy">Privacy</a></li>
-      <li><a href="#faq">Questions</a></li>
+      <li><a href="#how"><span>How it works</span><svg class="fl-ic" aria-hidden="true"><use href="#i-arrow"/></svg></a></li>
+      <li><a href="#features"><span>Languages and styles</span><svg class="fl-ic" aria-hidden="true"><use href="#i-arrow"/></svg></a></li>
+      <li><a href="#notetaker"><span>Notetaker</span><svg class="fl-ic" aria-hidden="true"><use href="#i-arrow"/></svg></a></li>
+      <li><a href="#privacy"><span>Privacy</span><svg class="fl-ic" aria-hidden="true"><use href="#i-arrow"/></svg></a></li>
+      <li><a href="#faq"><span>Questions</span><svg class="fl-ic" aria-hidden="true"><use href="#i-arrow"/></svg></a></li>
     </ul></div>
     <div><p class="eyebrow eyebrow-50">Open source</p><ul>
-      <li><a href="https://github.com/udsy19/super-flow">Source on GitHub</a></li>
-      <li><a href="https://github.com/udsy19/super-flow/blob/main/docs/ARCHITECTURE.md">Architecture</a></li>
-      <li><a href="https://github.com/udsy19/super-flow/blob/main/CONTRIBUTING.md">Contributing</a></li>
-      <li><a href="https://github.com/udsy19/super-flow/blob/main/CHANGELOG.md">Changelog</a></li>
-      <li><a href="https://github.com/udsy19/super-flow/blob/main/THIRD_PARTY_NOTICES.md">Third-party notices</a></li>
+      <li><a href="https://github.com/udsy19/super-flow"><span>Source on GitHub</span><svg class="fl-ic" aria-hidden="true"><use href="#i-arrow"/></svg></a></li>
+      <li><a href="https://github.com/udsy19/super-flow/blob/main/docs/ARCHITECTURE.md"><span>Architecture</span><svg class="fl-ic" aria-hidden="true"><use href="#i-arrow"/></svg></a></li>
+      <li><a href="https://github.com/udsy19/super-flow/blob/main/CONTRIBUTING.md"><span>Contributing</span><svg class="fl-ic" aria-hidden="true"><use href="#i-arrow"/></svg></a></li>
+      <li><a href="https://github.com/udsy19/super-flow/blob/main/CHANGELOG.md"><span>Changelog</span><svg class="fl-ic" aria-hidden="true"><use href="#i-arrow"/></svg></a></li>
+      <li><a href="https://github.com/udsy19/super-flow/blob/main/THIRD_PARTY_NOTICES.md"><span>Third-party notices</span><svg class="fl-ic" aria-hidden="true"><use href="#i-arrow"/></svg></a></li>
     </ul></div>
     <div><p class="eyebrow eyebrow-50">Project</p><ul>
-      <li><a href="https://github.com/udsy19/super-flow/releases">Releases</a></li>
-      <li><a href="https://github.com/udsy19/super-flow/issues">Report an issue</a></li>
-      <li><a href="https://github.com/udsy19/super-flow/blob/main/SECURITY.md">Security</a></li>
-      <li><a href="https://github.com/udsy19/super-flow/blob/main/PRIVACY.md">Privacy policy</a></li>
+      <li><a href="https://github.com/udsy19/super-flow/releases"><span>Releases</span><svg class="fl-ic" aria-hidden="true"><use href="#i-arrow"/></svg></a></li>
+      <li><a href="https://github.com/udsy19/super-flow/issues"><span>Report an issue</span><svg class="fl-ic" aria-hidden="true"><use href="#i-arrow"/></svg></a></li>
+      <li><a href="https://github.com/udsy19/super-flow/blob/main/SECURITY.md"><span>Security</span><svg class="fl-ic" aria-hidden="true"><use href="#i-arrow"/></svg></a></li>
+      <li><a href="https://github.com/udsy19/super-flow/blob/main/PRIVACY.md"><span>Privacy policy</span><svg class="fl-ic" aria-hidden="true"><use href="#i-arrow"/></svg></a></li>
     </ul></div>
   </div>
 
-  <svg class="giant" viewBox="0 0 1240 230" role="img" aria-label="Super Flow">
-    <g fill="currentColor"><rect x="0" y="55" width="34" height="120" rx="17"/><rect x="56" y="23" width="34" height="184" rx="17"/><rect x="112" y="0" width="34" height="230" rx="17"/><rect x="168" y="23" width="34" height="184" rx="17"/><rect x="224" y="55" width="34" height="120" rx="17"/></g>
+  <svg class="giant" viewBox="0 0 1240 230" role="img" aria-label="Super Flow" data-giant>
+    <g fill="currentColor" data-giant-bars><rect x="0" y="55" width="34" height="120" rx="17"/><rect x="56" y="23" width="34" height="184" rx="17"/><rect x="112" y="0" width="34" height="230" rx="17"/><rect x="168" y="23" width="34" height="184" rx="17"/><rect x="224" y="55" width="34" height="120" rx="17"/></g>
     <text x="300" y="190" textLength="925" lengthAdjust="spacingAndGlyphs">Super Flow</text>
   </svg>
 
@@ -491,7 +516,15 @@
 </footer>
 
 </div>
+<aside class="bbar" aria-label="Download Super Flow" data-bbar>
+  <div class="bbar-in">
+    <button type="button" class="bbar-x" aria-label="Close" data-bbar-close><svg aria-hidden="true"><use href="#i-x"/></svg></button>
+    <span class="bbar-icon" aria-hidden="true"><svg><use href="#i-mark"/></svg></span>
+    <p class="bbar-t"><b>Super Flow</b><span>Free and open source</span></p>
+    <a class="bbar-btn" href="https://github.com/udsy19/super-flow/releases/latest/download/SuperFlow.dmg">Download</a>
+  </div>
+</aside>
 <p class="sr-only" aria-live="polite" data-live-region></p>
-<script src="app.js" defer></script>
+<script src="app.js?v=49111737" defer></script>
 </body>
 </html>
