@@ -218,8 +218,9 @@ private func endToEndAutoLearn() {
 
 @MainActor private final class E2EHub: HubPresenting {
     var pages: [HubPage] = []
+    var panes: [SettingsPane] = []
     func show(_ page: HubPage) { pages.append(page) }
-    func showSettings(_ pane: SettingsPane) {}
+    func showSettings(_ pane: SettingsPane) { panes.append(pane) }
     func showMeeting(_ id: UUID) {}
     func showNotepad(for meetingID: UUID) {}
     func showQuickNote() {}
@@ -432,6 +433,42 @@ private func e2eWords(_ text: String) -> String { text.lowercased().components(s
     check(services.inserter.replaced == ["HELLO WORLD"], "the selection was rewritten: \(services.inserter.replaced)")
     check(services.store.lastDictation?.mode == .command && services.store.lastDictation?.rawText == "make this all caps", "Command Mode row in history")
     check(services.flowBar.states.contains(.transformProcessing(label: "Command Mode")) && services.flowBar.states.contains(.transformCompleted), "Command Mode bar states")
+
+    // On Rules only, a command or transform that needs the model gets a card that opens Settings › Models, never a
+    // "getting ready" that cannot resolve; with a model chosen (still downloading or loading) "getting ready" stays.
+    Defaults[.cleanupModelID] = nil
+    defer { Defaults.reset(.cleanupModelID) }
+    let noModel = { (card: FlowBarNotification?) in
+        card?.id == "transform.noCleanupModel" && card?.title == "Command Mode needs a cleanup model"
+            && card?.subtitle == "Choose one in Settings › Models." && card?.variant == .error && card?.actions == ["Open Settings"]
+    }
+    speech.text = "make this sound more formal"
+    services.hotkeys.send(.pressed(.pushToTalk, fnChord))
+    check(e2eWait { c.status == .listening }, "seventh session listening")
+    services.hotkeys.send(.pressed(.commandMode, fnCtrl))
+    check(e2eWait { c.mode == .command }, "Command Mode on Rules only")
+    services.audio.feed([Float](repeating: 0.1, count: 8_000))
+    services.hotkeys.send(.released(.commandMode, fnCtrl))
+    check(e2eWait { noModel(services.flowBar.notifications.last) }, "Rules only: Command Mode card (\(String(describing: services.flowBar.notifications.last)))")
+    check(e2eWait { c.status.canStart } && services.inserter.replaced == ["HELLO WORLD"], "nothing replaced")
+    services.flowBar.click("transform.noCleanupModel", "Open Settings")
+    check(services.hub.panes == [.models], "Open Settings opens Settings › Models: \(services.hub.panes)")
+    // Transforms: each run ends by resting the bar, after which the next one may start.
+    let transform = { (expect: (FlowBarNotification?) -> Bool) -> Bool in
+        let shown = services.flowBar.notifications.count
+        services.flowBar.states.removeAll()
+        services.hotkeys.send(.pressed(.transform, KeyChord(1)))
+        let carded = e2eWait { services.flowBar.notifications.count > shown && expect(services.flowBar.notifications.last) }
+        return carded && e2eWait { services.flowBar.states.last == .resting }
+    }
+    RunLoop.main.run(until: Date().addingTimeInterval(DictationLimits.completedStateDuration + 0.2))
+    check(transform(noModel), "Rules only: a transform gets the same card (\(String(describing: services.flowBar.notifications.last)))")
+    services.flowBar.click("transform.noCleanupModel", "Open Settings")
+    check(services.hub.panes == [.models, .models], "the transform card opens Settings › Models too")
+    Defaults[.cleanupModelID] = ModelCatalog.qwen35_2B.id
+    check(transform { $0?.id == "transform.failed" && $0?.title == "Just a moment - Super Flow is getting ready..." && $0?.variant == .alert },
+          "a chosen model still loading keeps getting ready (\(String(describing: services.flowBar.notifications.last)))")
+    Defaults[.cleanupModelID] = nil
 
     // Esc with nothing running closes cards; paste-last re-inserts the last transcript.
     services.hotkeys.send(.released(.pasteLastText, KeyChord(1, 2)))

@@ -567,17 +567,24 @@ public final class DictationCoordinator: DictationControlling {
     private func fail(_ session: Session, with notice: FlowBarNotification) {
         releaseCapture(session)
         Services.flowBar.setState(.error)
-        Services.flowBar.show(notice) { action in
-            if action == DictationNotices.openSettings { Permissions.open(.microphone) }
-            if action == DictationNotices.openHistory { Services.hub.show(.history) }
-            if action == DictationNotices.openModels { Services.hub.showSettings(.models) }
-        }
+        Services.flowBar.show(notice) { [weak self] action in self?.perform(action, on: notice) }
         Services.audio.play(.notificationError)
         end(session, status: .error, resting: false)
         completedRevert = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(DictationLimits.completedStateDuration * 1_000_000_000))
             guard !Task.isCancelled, let self, self.session == nil else { return }
             Services.flowBar.setState(self.restingState)
+        }
+    }
+
+    /// A failure card's button: "Open Settings" is the microphone pane, except on the no-cleanup-model card (Models).
+    private func perform(_ action: String, on notice: FlowBarNotification) {
+        switch action {
+        case DictationNotices.openSettings where notice.id == DictationNotices.noCleanupModelID, DictationNotices.openModels:
+            Services.hub.showSettings(.models)
+        case DictationNotices.openSettings: Permissions.open(.microphone)
+        case DictationNotices.openHistory: Services.hub.show(.history)
+        default: break
         }
     }
 
@@ -630,7 +637,8 @@ public final class DictationCoordinator: DictationControlling {
                 Services.flowBar.setState(.transformCompleted)
             } catch {
                 Services.flowBar.setState(.error)
-                Services.flowBar.show(DictationNotices.transformFailed(error)) { _ in }
+                let notice = DictationNotices.transformFailed(error)
+                Services.flowBar.show(notice) { [weak self] action in self?.perform(action, on: notice) }
                 Services.audio.play(.notificationError)
             }
             try? await Task.sleep(nanoseconds: UInt64(DictationLimits.completedStateDuration * 1_000_000_000))

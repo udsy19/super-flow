@@ -46,6 +46,8 @@ All notable changes to Super Flow are recorded here. The format follows Keep a C
   must keep 207 passes, and with the dev model the rules and Qwen3.5-2B must pass 90% (they pass 93.7%).
 
 ### Fixed
+- On Rules only (the default on 8 GB and Intel Macs), Command Mode and transforms that need a model no longer wait on
+  "getting ready" forever; a card says Command Mode needs a cleanup model and opens Settings › Models.
 - Meetings caught almost nothing a quiet laptop microphone heard (2 of ~80 words on a real call). Each track is now
   levelled before speech detection, pauses and onsets are tuned for quiet speakers, every ~30 s of a track is decoded
   again with context, and the end of each track is kept at stop.

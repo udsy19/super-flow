@@ -170,8 +170,20 @@ enum DictationNotices {
         FlowBarNotification(id: "transform.copied", title: "Copied!", subtitle: "Press ⌘V to paste the result.", variant: .success, timeout: 5)
     }
 
-    static func transformFailed(_ error: Error) -> FlowBarNotification {
+    static let noCleanupModelID = "transform.noCleanupModel"
+
+    /// Command Mode or a transform needed the cleanup model, but Settings › Models is on Rules only: nothing is coming,
+    /// so the card says how to choose one instead of "getting ready". Its "Open Settings" opens the Models page.
+    static func noCleanupModel() -> FlowBarNotification {
+        FlowBarNotification(id: noCleanupModelID, title: "Command Mode needs a cleanup model", subtitle: "Choose one in Settings › Models.",
+                            variant: .error, timeout: nil, actions: [openSettings])
+    }
+
+    /// `cleanupModelChosen` false (Rules only) turns "model not ready" into `noCleanupModel()`; with a model chosen it
+    /// is still downloading or loading, so the "getting ready" notice stays.
+    static func transformFailed(_ error: Error, cleanupModelChosen: Bool = Defaults[.cleanupModelID] != nil) -> FlowBarNotification {
         let transform = error as? TransformError
+        if transform == .modelNotReady, !cleanupModelChosen { return noCleanupModel() }
         return FlowBarNotification(id: "transform.failed", title: error.localizedDescription,
                                    subtitle: transform?.recoverySuggestion, variant: transform == .modelNotReady ? .alert : .error)
     }
