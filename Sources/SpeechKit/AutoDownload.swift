@@ -15,6 +15,20 @@ public struct DownloadConditions: Equatable, Sendable {
     }
 }
 
+extension DownloadConditions {
+    /// Free bytes for important use on the volume that will hold `url`, read at its nearest existing folder: a models
+    /// folder that does not exist yet (first launch) would otherwise read as 0 and stall automatic downloads.
+    /// `nil` when the system can't say.
+    public static func freeBytes(at url: URL) -> Int64? {
+        var folder = url.standardizedFileURL
+        while !FileManager.default.fileExists(atPath: folder.path), folder.pathComponents.count > 1 {
+            folder = folder.deletingLastPathComponent()
+        }
+        return (try? folder.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
+            .volumeAvailableCapacityForImportantUsage
+    }
+}
+
 /// The source of `DownloadConditions`; the self-test substitutes its own.
 @MainActor
 public protocol DownloadEnvironment: AnyObject {
@@ -65,8 +79,7 @@ final class SystemDownloadEnvironment: DownloadEnvironment {
     }
 
     var conditions: DownloadConditions {
-        let free = (try? volume().resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
-            .volumeAvailableCapacityForImportantUsage ?? 0
+        let free = DownloadConditions.freeBytes(at: volume()) ?? 0
         return DownloadConditions(networkUsable: path.map(Self.usable) ?? false,
                                   lowPowerMode: ProcessInfo.processInfo.isLowPowerModeEnabled, freeBytes: free)
     }

@@ -399,8 +399,7 @@ public final class ModelManager: ModelManaging {
         guard !files.isEmpty else { throw ModelError.unknownModel(layout.model.id) }
         let total = max(files.reduce(0) { $0 + max(0, $1.size) }, layout.model.bytes)
         let onDisk = layout.partialBytes()
-        let free = (try? layout.directory.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
-            .volumeAvailableCapacityForImportantUsage ?? Int64.max
+        let free = DownloadConditions.freeBytes(at: layout.directory) ?? Int64.max
         let needed = Int64(Double(max(0, total - onDisk)) * 1.1)
         guard free >= needed else { throw ModelError.notEnoughSpace(needed: needed) }
 

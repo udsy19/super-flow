@@ -12,6 +12,7 @@ import SuperFlowCore
 func registerSpeechKitTests() {
     SelfTest.cases.append(("SpeechKit.brokenModelFallsBack", { MainActor.assumeIsolated { speechBrokenModelFallsBack() } }))
     SelfTest.cases.append(("SpeechKit.languages", { speechLanguages() }))
+    SelfTest.cases.append(("SpeechKit.freeBytesBeforeFolderExists", { speechFreeBytesMissingFolder() }))
     SelfTest.cases.append(("SpeechKit.transcriptGuards", { speechGuards() }))
     SelfTest.cases.append(("SpeechKit.vadSegmentation", { speechSegmentation() }))
     SelfTest.cases.append(("SpeechKit.priorityGate", { MainActor.assumeIsolated { speechPriorityGate() } }))
@@ -901,4 +902,13 @@ private func wordErrors(_ reference: String, _ heard: String) -> Int {
     if case .failure(let error)? = result {
         check(error is SpeechError && error.localizedDescription.contains("small.bin"), "with none loadable, the preferred model's error: \(error.localizedDescription)")
     } else { check(false, "two damaged models can't transcribe") }
+}
+
+private func speechFreeBytesMissingFolder() {
+    let missing = FileManager.default.temporaryDirectory
+        .appendingPathComponent("models-missing-\(UUID().uuidString)/Application Support/Models", isDirectory: true)
+    let free = DownloadConditions.freeBytes(at: missing)
+    check(!FileManager.default.fileExists(atPath: missing.path), "the models folder does not exist yet")
+    check((free ?? 0) > 0 && free == DownloadConditions.freeBytes(at: FileManager.default.temporaryDirectory),
+          "free space is read at the nearest existing folder, not 0, before the models folder exists")
 }

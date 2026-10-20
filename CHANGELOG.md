@@ -4,6 +4,10 @@ All notable changes to Super Flow are recorded here. The format follows Keep a C
 
 ## [Unreleased]
 
+### Fixed
+- Model downloads read free disk space at the nearest existing folder, so the space check works before the
+  models folder exists instead of reading it as empty or skipping the check.
+
 ## [1.0.0] - 2026-10-20
 
 ### Added
