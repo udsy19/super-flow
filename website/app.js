@@ -392,7 +392,7 @@
   }
   function Scene(card, desktop) {
     const S = { card, desktop };
-    S.bgs = $$("[data-bg]", card);
+    S.bgs = $$("[data-bg]", card); S.art = $("[data-art]", card);
     S.intro = $("[data-intro]", card);
     S.screen = $("[data-screen]", card);
     S.tr = $("[data-tr]", card); S.rawWrap = $("[data-raw-wrap]", card);
@@ -417,6 +417,7 @@
     S.barSeed = S.bars.map(() => ({ ceil: 0.24 + 0.74 * (0.82 + 0.18 * Math.random()), f1: 0.8 + Math.random() * 1.5, f2: 2 + Math.random() * 3, p1: Math.random() * 6.28, p2: Math.random() * 6.28 }));
     S.env = [Math.random() * 6.28, Math.random() * 6.28];
     S.extras = $$("[data-extra]", S.audio);
+    S.caps = $$("[data-cap]", S.audio); S.mid = $("[data-mid]", S.audio); S.wave = $(".fw", S.audio);
     S.chapter = -2; S.wordsShown = -1; S.pillShown = undefined; S.bgShown = 0;
     S.polishColored = false; S.gradReady = false; S.fanCur = 0; S.liftCur = 1; S.fanTgt = 0; S.liftTgt = 1;
     S.polishCur = 0; S.wiggle = 0; S.pillT = []; S.voiceLive = false;
@@ -479,7 +480,31 @@
     const want = idx < 1 ? 0 : Math.min(idx, 2);
     if (want === S.bgShown) return;
     S.bgShown = want;
-    S.bgs.forEach((b, i) => { b.style.opacity = i === want ? "1" : "0"; });
+    S.bgs.forEach((b) => { b.style.opacity = +b.dataset.bg === want ? "1" : "0"; });
+  }
+  // The backdrop goes out of focus as the story moves on: a blur and a slight push-in on the art's own layer.
+  const ART_BLUR = 26, ART_ZOOM = 0.06;
+  function artDepth(S, t, base = "", max = ART_BLUR) {
+    const b = (max * t).toFixed(1), tf = `${base} scale(${(1 + ART_ZOOM * t).toFixed(4)})`;
+    if (b !== S.artBlur) { S.artBlur = b; S.art.style.filter = `blur(${b}px)`; }
+    if (tf !== S.artTf) { S.artTf = tf; S.art.style.transform = tf; }
+  }
+  function artReset(S) { S.artBlur = S.artTf = null; S.art.style.filter = ""; S.art.style.transform = ""; }
+  // The pill opens from push-to-talk (73 wide) to hands-free (102 wide): the end caps part over a middle that stretches
+  // (76 wide in the stylesheet, 2 px under each cap), the bars shift 2 px left and the buttons grow in with the caps.
+  const PILL_IN = 14.5, PILL_MID = 76;
+  function pillOpen(S, e) {
+    const k = e.toFixed(3);
+    if (k === S.pillOpenK) return;
+    S.pillOpenK = k;
+    const a = PILL_IN * (1 - e);
+    S.caps[0].style.transform = `translateX(${a.toFixed(2)}px)`;
+    S.caps[1].style.transform = `translateX(${(-a).toFixed(2)}px) scaleX(-1)`;
+    S.mid.style.transform = `scaleX(${((PILL_MID - 2 * a) / PILL_MID).toFixed(4)})`;
+    S.wave.style.transform = `translateX(${(2 * (1 - e)).toFixed(2)}px)`;
+    S.extras[0].style.transform = `translateX(${a.toFixed(2)}px) scale(${k})`;
+    S.extras[1].style.transform = `translateX(${(-a).toFixed(2)}px) scale(${k})`;
+    S.extras.forEach((x) => { x.style.opacity = k; });
   }
   // The "Cleaning up…" pill: spinner, then dots, then (chapter three) a live voice wave.
   function pillCalls(S) { S.pillT.forEach(clearTimeout); S.pillT = []; }
@@ -802,6 +827,7 @@
     ci.style.transform = `translate3d(${((w - 1160) / 2).toFixed(1)}px, ${((h - 501) / 2).toFixed(1)}px, 0)`;
     const bgT = `translate3d(${((w - 1240) / 2).toFixed(1)}px, ${((h - 620) / 2).toFixed(1)}px, 0)`;
     scene.bgs.forEach((b) => { b.style.transform = bgT; });
+    artDepth(scene, phaseT(d, geo.dBh, geo.dC + 0.8 * (geo.dHold - geo.dC)), bgT);
     cardW = w; cardH = h;
     cs.style.transform = `translate3d(${((w - 400) / 2).toFixed(1)}px, ${((h - 467) / 2).toFixed(1)}px, 0)`;
     outCard.style.width = kbW.toFixed(1) + "px";
@@ -814,7 +840,17 @@
     if (!tabFade) scene.screen.style.opacity = d >= geo.dC + 0.8 * (geo.dHold - geo.dC) ? "1" : "0";
     pillTgt = phaseT(d, geo.dBh, geo.dHold);
     if (clickLock == null) setActiveTab(d >= geo.dHold - 0.02 * (geo.tabEnd) ? (d <= geo.dHold ? 0 : tabAt(d)) : -1);
+    placePill();
     storyScene();
+  }
+  // The 102 × 30 pill sits 36 px above the card's bottom, centred, on whole device pixels so it rests crisp. Placed again
+  // whenever the card is, so the two never drift a frame apart while scrolling.
+  function placePill() {
+    if (!geo) return;
+    const hp = pillCur, px = devicePixelRatio || 1, snap = (v) => Math.round(v * px) / px;
+    const tf = `translate(${snap(cardW / 2 - 51)}px, ${snap(cardH - 36 - 30 + geo.pillRec * (1 - hp))}px) scale(${(1.8 - 0.8 * hp).toFixed(3)})`;
+    if (tf !== scene.audioTf) { scene.audioTf = tf; scene.audio.style.transform = tf; }
+    pillOpen(scene, smooth((hp - 0.55) / 0.45));
   }
   function storyScene() {
     const idx = activeTab;
@@ -841,9 +877,7 @@
       storyScene();
     }
     pillCur = follow(pillCur, pillTgt, 0.16, dr);
-    const hp = pillCur, ei = smooth((hp - 0.55) / 0.45);
-    scene.audio.style.transform = `translate(${(cardW / 2).toFixed(1)}px, ${(cardH - 36 - 34).toFixed(1)}px) translateX(-50%) translateY(${(geo ? geo.pillRec * (1 - hp) : 0).toFixed(1)}px) scale(${(1.8 - 0.8 * hp).toFixed(3)})`;
-    scene.extras.forEach((e) => { const s = (18 * ei).toFixed(1) + "px"; e.style.width = s; e.style.height = s; e.style.opacity = ei.toFixed(3); });
+    placePill();
     sceneAudio(scene, clock);
     sceneTick(scene, dr);
     if (scene.wiggle) renderStory();
@@ -894,6 +928,9 @@
   // Stacked layout: each chapter plays once when it is 15 % up the screen, and resets when it leaves.
   const chPlay = chScenes.map(() => ({ on: false, tp: 0 }));
   function stackedTick(t, dt) {
+    // each chapter's backdrop goes out of focus as its card rises from the bottom of the screen to a little past the middle
+    const V = innerHeight, tops = chScenes.map((S) => S.card.getBoundingClientRect().top);
+    chScenes.forEach((S, k) => artDepth(S, phaseT(V - tops[k], 0, 0.45 * V), "", ART_BLUR * 0.75));
     chScenes.forEach((S, k) => {
       const st = chPlay[k];
       if (!st.on) return;
@@ -911,7 +948,8 @@
     }), { rootMargin: "0px 0px -15% 0px" }).observe(S.card);
   });
   function stackedStill() {
-    // reduced motion: each chapter shown as it ends
+    // reduced motion: each chapter shown as it ends, over the sharp art
+    chScenes.forEach(artReset);
     chScenes.forEach((S, k) => { sceneMeasure(S); sceneUpdate(S, k, k === 2 ? 0.15 : 1, { exit: false }); if (k === 2) { S.fanCur = 0; S.liftCur = 1; fanRender(S, true); } });
     sceneUpdate(scene, -1, 0);
   }
