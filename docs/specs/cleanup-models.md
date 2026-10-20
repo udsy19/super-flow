@@ -1,6 +1,7 @@
 # Cleanup models: can a smaller model replace Qwen3.5-2B?
 
-Status: measured 19 Oct 2026. Decision: **keep Qwen3.5-2B as the default; do not add Gemma 3 1B.** No code changed.
+Status: measured 19 Oct 2026. Decision: **keep Qwen3.5-2B as the default; do not add Gemma 3 1B; the 8 GB preset runs
+rules-only cleanup** (§5).
 
 Related: `cleanup-quality.md` (the eval set, rubric and §7 model choice), `local-models.md` §3 (cleanup LLM, prompt
 design, guardrails), `cleanup-eval.jsonl` (the 222 cases).
@@ -20,8 +21,8 @@ Qwen3.5-2B while running faster, so that nobody needs the slower 4B.
 - **Q8_0 does not rescue it.** It is within one case of Q4_K_M with either prompt, 33% larger and a little slower.
 - **No smaller model matches 2B.** Qwen3.5-0.8B scores 91.0% and Gemma 3 270M 90.5%. Both are below the rules alone, and
   each fails two injection cases that the rules alone pass.
-- **Side finding:** Qwen3.5-0.8B, the cleanup model of the "Apple silicon, light" (8 GB) preset, makes cleanup 5 cases
-  worse than the rules alone (8 lost, 3 gained). See §5.
+- **Side finding:** Qwen3.5-0.8B, then the cleanup model of the "Apple silicon, light" (8 GB) preset, made cleanup 5
+  cases worse than the rules alone (8 lost, 3 gained). That preset now cleans with the rules alone. See §5.
 
 ## 1. Setup
 
@@ -153,9 +154,9 @@ of two cases. Closing a 5-point gap would take a different model, not more promp
 - **Do not add Gemma 3 270M.** It is the fastest (37 ms), but it is below the rules alone and fails two injection
   cases that the rules pass.
 
-## 5. Open question: the 8 GB preset
+## 5. Decided: the 8 GB preset runs rules-only
 
-`ModelCatalog.preset` gives Macs under 12 GB Qwen3.5-0.8B for dictation cleanup. On this set it scores 202, 5 below
+`ModelCatalog.preset` gave Macs under 12 GB Qwen3.5-0.8B for dictation cleanup. On this set it scores 202, 5 below
 the rules alone (207). It loses fil-15, lst-02, dic-03, cod-05, inj-09, inj-14, mul-04 and lng-02, and gains lst-03,
 cod-04 and lvl-04. No answered or obeyed injection reaches the output. The two injection losses drop the "Hey
 assistant," / "You are a helpful assistant." openers. These are the options:
@@ -164,7 +165,11 @@ assistant," / "You are a helpful assistant." openers. These are the options:
 2. Use the LLM only at the medium and high levels, where its list formatting helps.
 3. Tune the prompt for the 0.8B.
 
-The eval set is English-heavy and comes from one rubric, so measure on an 8 GB Mac before changing the preset.
+**Decision: option 1.** The light preset installs no cleanup model and loads none; `ModelCatalog.defaultCleanupModel`
+is nil there (and on Intel), so `Defaults[.cleanupModelID]` starts at nil, rules only. Settings › Models › "Cleanup
+model" shows on every Mac with "Rules only (fastest)" and Qwen3.5 2B (plus 4B from 24 GB). On an 8 GB Mac, Command
+Mode and Transforms run on Qwen3.5-2B only when the user picks it there. The 0.8B stays in the catalog only for
+meeting notes on Intel Macs.
 
 ## 6. Model files (pinned)
 

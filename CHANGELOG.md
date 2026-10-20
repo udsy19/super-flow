@@ -38,7 +38,10 @@ All notable changes to Super Flow are recorded here. The format follows Keep a C
   dictation (a second click reuses it while it is still empty). The bar's hover buttons are now Open Super Flow,
   Quick note and sounds: the dictation language is chosen in Settings, and the Notetaker starts from its shortcut or
   the hub.
-- A "Cleanup model" choice on Macs with 24 GB or more: Qwen3.5 2B (the default) or Qwen3.5 4B (best quality).
+- A "Cleanup model" choice in Settings › Models on every Mac: Rules only (fastest), Qwen3.5 2B, and Qwen3.5 4B (best
+  quality) on Macs with 24 GB or more. Qwen3.5 2B is the default from 16 GB; 8 GB and Intel Macs default to rules only
+  and download no cleanup model, because Qwen3.5-0.8B scored below the rules alone (91.0% vs 93.2%) and dropped two
+  injection openers. On those Macs Transforms and Command Mode use Qwen3.5 2B once it is chosen there.
 - The cleanup evaluation set (`docs/specs/cleanup-eval.jsonl`, 222 dictations) runs in the self-test: the rules alone
   must keep 207 passes, and with the dev model the rules and Qwen3.5-2B must pass 90% (they pass 93.7%).
 

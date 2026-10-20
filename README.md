@@ -124,14 +124,16 @@ points more accurate, about twice as slow), which they already have for meeting 
 | Whisper large-v3-turbo (q5_0) | Multilingual fallback, on demand | 574 MB | MIT |
 | Whisper small (q5_1) | Intel Macs with 16 GB+ | 190 MB | MIT |
 | Silero VAD v6.2 | Voice activity detection — bundled, nothing to download | 0.9 MB | MIT |
-| Qwen3.5-2B (Q4_K_M) | Cleanup (the default), Transforms, Command Mode | 1.28 GB | Apache-2.0 |
-| Qwen3.5-0.8B (Q4_K_M) | Cleanup on 8 GB Macs and Intel | 533 MB | Apache-2.0 |
+| Qwen3.5-2B (Q4_K_M) | Cleanup (the default from 16 GB), Transforms, Command Mode; meeting notes on 8 GB Macs | 1.28 GB | Apache-2.0 |
+| Qwen3.5-0.8B (Q4_K_M) | Meeting notes on Intel Macs | 533 MB | Apache-2.0 |
 | Qwen3.5-4B (Q4_K_M) | Meeting notes; cleanup when chosen on 24 GB Macs | 2.74 GB | Apache-2.0 |
 | Speaker diarization (Community-1, Core ML) | Who said what in meetings | 22 MB | CC-BY-4.0 |
 | LocalVQE 1.3 (Core ML) | Echo removal in meetings | 20 MB | Apache-2.0 |
 
-A 16 GB Apple silicon Mac installs about 1.8 GB for dictation and 2.8 GB more for meetings; a 8 GB one about 1.1 GB
-and 1.3 GB. Everything lives in `~/Library/Application Support/Super Flow/Models`. See
+A 16 GB Apple silicon Mac installs about 1.8 GB for dictation and 2.8 GB more for meetings; an 8 GB one about 0.5 GB
+and 1.3 GB. 8 GB and Intel Macs clean dictation with the rules alone, which scored higher there than the 0.8B model
+([cleanup-models.md](docs/specs/cleanup-models.md) §5); choosing Qwen3.5 2B in Settings › Models › Cleanup model turns
+on LLM cleanup, Transforms and Command Mode. Everything lives in `~/Library/Application Support/Super Flow/Models`. See
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for attributions and [PRIVACY.md](PRIVACY.md) for the exact hosts.
 
 ## Building

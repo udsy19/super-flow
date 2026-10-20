@@ -77,7 +77,7 @@ public enum ModelCatalog {
         sha256: "aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223", licence: "Apache-2.0",
         attribution: "Qwen3.5-2B by the Qwen team (Apache-2.0), GGUF quantisation by Unsloth.", minRAM: 2 * gib)
 
-    /// Light cleanup model for 8 GB Macs and Intel background notes.
+    /// Meeting notes on Intel Macs, in the background on the CPU.
     public static let qwen35_0_8B = ModelDescriptor(
         id: "Qwen3.5-0.8B-Q4_K_M", kind: .llm, name: "Qwen3.5 0.8B (Q4_K_M)", engine: "llama",
         bytes: 532_517_120, url: hf("unsloth/Qwen3.5-0.8B-GGUF", "main", "Qwen3.5-0.8B-Q4_K_M.gguf"),
@@ -127,10 +127,17 @@ public enum ModelCatalog {
         return [parakeetV3, nemotronStreamingEN] + (hasAppleSpeech ? [appleSpeech] : [])
     }
 
-    /// The cleanup models Settings › Models offers (cleanup-quality.md §7): Qwen3.5-2B, the default everywhere, and the
-    /// 4B "best quality" model on Macs with 24 GB or more, where it is already downloaded for meeting notes.
+    /// The cleanup models Settings › Models offers next to "Rules only" (cleanup-quality.md §7, cleanup-models.md §5):
+    /// Qwen3.5-2B on every Mac, and the 4B "best quality" model on Macs with 24 GB or more, where it is already downloaded
+    /// for meeting notes.
     public static func cleanupModels(isAppleSilicon: Bool, memoryBytes: Int64) -> [ModelDescriptor] {
-        isAppleSilicon && memoryBytes >= 24 * gib ? [qwen35_2B, qwen35_4B] : []
+        isAppleSilicon && memoryBytes >= 24 * gib ? [qwen35_2B, qwen35_4B] : [qwen35_2B]
+    }
+
+    /// The cleanup model a Mac starts with: the LLM in its dictation preset, or none (rules only) on the light and Intel
+    /// presets, where a model small enough to fit scored below the rules alone (cleanup-models.md §5).
+    public static func defaultCleanupModel(isAppleSilicon: Bool, memoryBytes: Int64) -> ModelDescriptor? {
+        preset(isAppleSilicon: isAppleSilicon, memoryBytes: memoryBytes).dictation.first { $0.kind == .llm }
     }
 
     /// The models the dictation and meetings presets install (local-models.md §9.2).
@@ -150,7 +157,7 @@ public enum ModelCatalog {
                           meetings: [qwen35_0_8B, diarization])
         }
         if gb < 12 {
-            return Preset(name: "Apple silicon, light", dictation: [parakeetV3, whisperBase, qwen35_0_8B],
+            return Preset(name: "Apple silicon, light", dictation: [parakeetV3, whisperBase],
                           meetings: [diarization, localVQE, qwen35_2B])
         }
         return Preset(name: gb >= 24 ? "Apple silicon, 32 GB+" : "Apple silicon, standard",

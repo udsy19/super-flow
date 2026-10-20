@@ -145,8 +145,17 @@ public enum HubFormat {
     }
 
     /// The cleanup model choices in Settings › Models (24 GB Macs and up).
-    public static func cleanupChoice(_ model: ModelDescriptor) -> String {
-        model.id == ModelCatalog.qwen35_4B.id ? "Qwen3.5 4B (best quality)" : "Qwen3.5 2B (default)"
+    /// The "Cleanup model" row's detail; the 4B sentence only where 4B is offered.
+    public static func cleanupDetail(offersBest: Bool) -> String {
+        "Fixes punctuation, fillers and self-corrections. Rules only needs no model; Command Mode and transforms need one."
+            + (offersBest ? " The 4B model is more accurate and takes about twice as long." : "")
+    }
+
+    /// A "Cleanup model" choice; nil is rules only.
+    public static func cleanupChoice(_ model: ModelDescriptor?, isDefault: Bool) -> String {
+        guard let model else { return "Rules only (fastest)" }
+        if model.id == ModelCatalog.qwen35_4B.id { return "Qwen3.5 4B (best quality)" }
+        return isDefault ? "Qwen3.5 2B (default)" : "Qwen3.5 2B"
     }
 
     // MARK: Languages

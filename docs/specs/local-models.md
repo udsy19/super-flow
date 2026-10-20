@@ -455,7 +455,7 @@ Flow records `e2e` latency, `network_processing_latency` and per-stage `response
 | Post-roll after key-up | 150 ms | 150 ms (segments that closed earlier are already transcribed and formatted) | §2.8 |
 | ASR | ≤ 150 ms on M4-class (measured: Parakeet 160 ms end to end including load; whisper turbo 118 ms warm); ≤ 400 ms on M1-class [U] | ≤ 250 ms (M4) / ≤ 500 ms (M1) for the tail | Model resident and warmed; sized `audio_ctx`; incremental segments while holding |
 | Deterministic pre/post rules | < 5 ms | < 10 ms | Pure Swift |
-| LLM cleanup | ≤ 250 ms on M4-class (measured 124–218 ms, Qwen3.5-2B); ≤ 350 ms on M1-class with Qwen3.5-0.8B [U]; 0 when skipped (≤ 3 words, verbatim) | ≤ 900 ms (tail segment only, earlier segments formatted while speaking) | Cached system prefix; only the user turn is prefilled; greedy decode; `max_tokens` ≈ 1.5 × input tokens + 16 |
+| LLM cleanup | ≤ 250 ms on M4-class (measured 124–218 ms, Qwen3.5-2B); ≤ 400 ms on M1-class with Qwen3.5-2B when chosen [U]; 0 when skipped (rules only on the light and Intel presets, ≤ 3 words, verbatim) | ≤ 900 ms (tail segment only, earlier segments formatted while speaking) | Cached system prefix; only the user turn is prefilled; greedy decode; `max_tokens` ≈ 1.5 × input tokens + 16 |
 | Insert (pasteboard + ⌘V, restore pasteboard later) | 30–60 ms | 30–60 ms | `behaviour.md` owns the insertion details |
 | **Target total** | **≤ 550 ms p50 on M4-class** (150 + 118 + ~200 + 50, from measured parts); **≤ 950 ms p50 on M1-class** [U] | **≤ 1.4 s p50** | Re-measure per chip with the bench self-test (§9.3) |
 
@@ -813,7 +813,7 @@ This aligns with `oss-survey.md` §8.1, which owns repository URLs, pins and the
 | Dictation ASR, system option | Apple SpeechTranscriber (macOS 26, 30 locales) | [M] 0.27–0.32 s / 0.41–0.58 s, no Speech permission needed in the probe |
 | **Cleanup LLM (default)** | llama.cpp b11721 + **Qwen3.5-2B Q4_K_M** (1.28 GB, Apache-2.0), cached prefix (state snapshot), greedy, rules around it | [M] 124–218 ms short / 540 ms long on M4 Pro. Correct casing, lists and question handling with few-shot. Missed the "no wait" self-correction, so the rules pre-pass for correction markers is needed (§3.7). |
 | Cleanup alternative | **Qwen3-1.7B** Q4_K_M (1.11 GB, Apache-2.0, `oss-survey.md` pick) | Unmeasured. A/B it against Qwen3.5-2B on the golden fixtures (§9.3) before v1. Swapping is a catalog change, not a code change. |
-| Cleanup light (8 GB, base M1/M2) | Qwen3.5-0.8B Q4_K_M (533 MB) or Apple Foundation Models | [M] 57–272 ms, but weak. The deterministic layers carry it. |
+| Cleanup light (8 GB, base M1/M2) | **Rules only** (no LLM); Qwen3.5-2B when the user picks it in Settings › Models | Qwen3.5-0.8B was measured at 57–272 ms but scored below the rules alone on the eval set (91.0% vs 93.2%, two injection losses), so it was dropped from dictation (`cleanup-models.md` §5). |
 | **Transforms, Command Mode, meeting notes** | llama.cpp + **Qwen3.5-4B** Q4_K_M (2.74 GB); alternative Qwen3-4B-Instruct-2507 (2.50 GB) | [M] correct self-correction without rewording; one hour of transcript prefilled in 20.9 s, decode 50.9 tok/s, 3.67 GB RSS on M4 Pro (Qwen3-4B: 29.2 s, 39.6 tok/s, 5.70 GB). Rolling map-reduce keeps end-of-meeting latency in seconds. |
 | LLM system option | Apple Foundation Models (macOS 26, 4,096-token context [M]) | [M] 197–728 ms cleanup. Map-reduce only for notes. |
 | Meetings ASR | Parakeet TDT v3 sliding window per channel (shared instance with dictation, priority queue); whisper.cpp turbo on VAD segments for other languages | §8.3 |
@@ -869,7 +869,7 @@ Presets are chosen by memory **and** memory bandwidth, because LLM decode speed 
 | Preset | Detect | Dictation install | + Meetings pack | Total disk | RAM while dictating | RAM while summarising |
 |---|---|---|---|---|---|---|
 | Intel | `hw.optional.arm64 == 0` | whisper small q5_1 190 MB (base on ≤ 8 GB) + bootstrap base 60 MB; cleanup rules only | Qwen3.5-0.8B 533 MB (CPU, background) + diarization 22 MB (offline, Core ML on CPU [U]) | ~0.25 GB + 0.56 GB = **~0.8 GB** | ~0.3–0.6 GB | ~1.1 GB |
-| Apple silicon, light (< 12 GB, or base M1/M2) | arm64 and (RAM < 12 GB or ≤ 100 GB/s chip) | Parakeet v3 470 MB + base 60 MB + Qwen3.5-0.8B 533 MB | diarization 22 + LocalVQE 20 + Qwen3.5-2B 1,281 MB (map-reduce) | 1.06 + 1.32 = **~2.4 GB** | ~1.4 GB | ~2.0 GB |
+| Apple silicon, light (< 12 GB, or base M1/M2) | arm64 and (RAM < 12 GB or ≤ 100 GB/s chip) | Parakeet v3 470 MB + base 60 MB; cleanup rules only (Qwen3.5-2B when chosen) | diarization 22 + LocalVQE 20 + Qwen3.5-2B 1,281 MB (map-reduce) | 0.53 + 1.32 = **~1.9 GB** | ~0.6 GB | ~2.0 GB |
 | **Apple silicon, standard (default)** | arm64, 12–24 GB, M3 or newer, or Pro/Max/Ultra | Parakeet v3 470 + base 60 + Qwen3.5-2B 1,281 MB | diarization 22 + LocalVQE 20 + Qwen3.5-4B 2,741 MB | 1.81 + 2.78 = **~4.6 GB** | ~2.1 GB | ~3.7 GB [M] |
 | Apple silicon, 32 GB+ | arm64, ≥ 24 GB | as standard, + Qwen3.5-4B kept resident for Transforms | as standard, + optional Sortformer 250 MB; optional Qwen3.5-9B 5,681 MB for "best notes" | **~4.8 GB** (10.5 GB with 9B) | ~5.3 GB | ~3.7 GB (4B) / ~7–8 GB (9B) [U] |
 | Any, on demand | non-Parakeet dictation language or "Auto-detect (99)" selected | + whisper turbo q5_0 574 MB (Apple silicon) | — | +0.57 GB | +0.85 GB [M] | — |

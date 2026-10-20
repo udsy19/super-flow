@@ -506,6 +506,7 @@ struct ModelsPane: View {
         let engines = ModelCatalog.dictationEngines(isAppleSilicon: Machine.isAppleSilicon,
                                                     hasAppleSpeech: Services.models?.state(of: ModelCatalog.appleSpeech.id) == .installed)
         let cleanupModels = ModelCatalog.cleanupModels(isAppleSilicon: Machine.isAppleSilicon, memoryBytes: Machine.memoryBytes)
+        let defaultCleanup = Defaults.Keys.cleanupModelID.defaultValue
         SettingsPage(title: "Models", description: "Speech, cleanup and meeting notes run on these models, on this Mac. They download on their own.") {
             RowsCard {
                 SwitchRow(title: "Download models automatically",
@@ -522,14 +523,11 @@ struct ModelsPane: View {
                                                       set: { speechModel = $0 }), width: 290)
                     }
                 }
-                if !cleanupModels.isEmpty {
-                    Rule()
-                    SettingsRow(title: "Cleanup model",
-                                detail: "Fixes punctuation, fillers and self-corrections. The 4B model is more accurate and takes about twice as long.",
-                                controlWidth: 290) {
-                        MenuPicker(options: cleanupModels.map { ($0.id, HubFormat.cleanupChoice($0)) },
-                                   selection: Binding(get: { cleanupModel ?? ModelCatalog.qwen35_2B.id }, set: { cleanupModel = $0 }), width: 290)
-                    }
+                Rule()
+                SettingsRow(title: "Cleanup model", detail: HubFormat.cleanupDetail(offersBest: cleanupModels.contains { $0.id == ModelCatalog.qwen35_4B.id }),
+                            controlWidth: 290) {
+                    MenuPicker(options: ([nil] + cleanupModels).map { ($0?.id ?? "", HubFormat.cleanupChoice($0, isDefault: $0?.id == defaultCleanup)) },
+                               selection: Binding(get: { cleanupModel ?? "" }, set: { cleanupModel = $0.isEmpty ? nil : $0 }), width: 290)
                 }
             }
             SettingsSection(title: "For this Mac · \(preset.name)") {

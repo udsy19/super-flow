@@ -116,7 +116,8 @@ private func coreSettingsDefaults() {
     check(Defaults[.meetingDetection] == .notify && !Defaults[.notetakerAutoStartEnabled] && Defaults[.notetakerAutoEndEnabled], "detect, ask, auto-end")
     check(Defaults[.notetakerMaxRecordingLength] == 7200 && Defaults[.notetakerLiveTranscriptEnabled] && Defaults[.notetakerTripleTapShortcutEnabled],
           "notetaker defaults")
-    check(Defaults[.asrModelID] == ModelCatalog.parakeetV3.id && Defaults[.cleanupModelID] == ModelCatalog.qwen35_2B.id
+    let thisMacCleanup = ModelCatalog.defaultCleanupModel(isAppleSilicon: Machine.isAppleSilicon, memoryBytes: Machine.memoryBytes)?.id
+    check(Defaults[.asrModelID] == ModelCatalog.parakeetV3.id && Defaults[.cleanupModelID] == thisMacCleanup
           && Defaults[.notesModelID] == ModelCatalog.qwen35_4B.id, "model defaults")
     check(Defaults[.insertionMethod] == .paste && Defaults[.restoreClipboardAfterPaste], "insertion defaults")
     check(Defaults[.theme] == .light && !Defaults[.isOnboardingCompleted], "theme and onboarding")
@@ -127,7 +128,7 @@ private func coreSettingsDefaults() {
     Defaults[.cleanupModelID] = nil
     check(Defaults[.flowBarEdge] == .left && Defaults[.styleProfile].cleanupLevel == .high && Defaults[.cleanupModelID] == nil, "writes read back")
     Defaults.reset(.flowBarEdge); Defaults.reset(.styleProfile); Defaults.reset(.cleanupModelID)
-    check(Defaults[.cleanupModelID] == ModelCatalog.qwen35_2B.id, "reset restores the default")
+    check(Defaults[.cleanupModelID] == thisMacCleanup, "reset restores the default")
     check(SettingsOptions.transcriptRetentionDays == [0, 1, 7, 30, 90, 180, 365] && SettingsOptions.maxRecordingLengths == [1800, 3600, 7200, 10800],
           "settings options")
 }
@@ -236,11 +237,20 @@ private func coreModelCatalog() {
     check(ModelCatalog.dictationEngines(isAppleSilicon: true, hasAppleSpeech: false).map(\.id) == [ModelCatalog.parakeetV3.id, nemotron.id]
           && ModelCatalog.dictationEngines(isAppleSilicon: true, hasAppleSpeech: true).last?.id == ModelCatalog.appleSpeech.id
           && ModelCatalog.dictationEngines(isAppleSilicon: false, hasAppleSpeech: true).isEmpty, "dictation engine choices")
-    check(ModelCatalog.cleanupModels(isAppleSilicon: true, memoryBytes: 16 << 30).isEmpty
+    check(ModelCatalog.cleanupModels(isAppleSilicon: true, memoryBytes: 8 << 30).map(\.id) == [ModelCatalog.qwen35_2B.id]
+          && ModelCatalog.cleanupModels(isAppleSilicon: false, memoryBytes: 8 << 30).map(\.id) == [ModelCatalog.qwen35_2B.id]
+          && ModelCatalog.cleanupModels(isAppleSilicon: true, memoryBytes: 16 << 30).map(\.id) == [ModelCatalog.qwen35_2B.id]
           && ModelCatalog.cleanupModels(isAppleSilicon: true, memoryBytes: 24 << 30).map(\.id) == [ModelCatalog.qwen35_2B.id, ModelCatalog.qwen35_4B.id],
-          "the 4B cleanup model is offered from 24 GB")
-    check(Defaults.Keys.cleanupModelID.defaultValue == ModelCatalog.qwen35_2B.id && Defaults.Keys.asrModelID.defaultValue == ModelCatalog.parakeetV3.id,
-          "defaults: Parakeet and Qwen3.5-2B")
+          "2B is offered on every Mac, 4B from 24 GB")
+    check(ModelCatalog.defaultCleanupModel(isAppleSilicon: true, memoryBytes: 16 << 30)?.id == ModelCatalog.qwen35_2B.id
+          && ModelCatalog.defaultCleanupModel(isAppleSilicon: true, memoryBytes: 32 << 30)?.id == ModelCatalog.qwen35_2B.id
+          && ModelCatalog.defaultCleanupModel(isAppleSilicon: true, memoryBytes: 8 << 30) == nil
+          && ModelCatalog.defaultCleanupModel(isAppleSilicon: false, memoryBytes: 16 << 30) == nil,
+          "cleanup starts on Qwen3.5-2B, rules only on 8 GB and Intel Macs (cleanup-models.md §5)")
+    check(Defaults.Keys.cleanupModelID.defaultValue
+              == ModelCatalog.defaultCleanupModel(isAppleSilicon: Machine.isAppleSilicon, memoryBytes: Machine.memoryBytes)?.id
+          && Defaults.Keys.asrModelID.defaultValue == ModelCatalog.parakeetV3.id,
+          "defaults: Parakeet and this Mac's cleanup model")
     check(ModelCatalog.all.filter { $0.url != nil }.allSatisfy { $0.sha256?.count == 64 }, "every URL entry has a SHA-256")
     check(ModelCatalog.whisperLargeV3Turbo.fileName == "ggml-large-v3-turbo-q5_0.bin" && ModelCatalog.parakeetV3.fileName == "parakeet-tdt-0.6b-v3", "file names")
     check(ModelCatalog.all.allSatisfy { !$0.licence.isEmpty && !$0.attribution.isEmpty }, "licence and attribution on every model")
@@ -248,7 +258,11 @@ private func coreModelCatalog() {
     check(standard.dictation.map(\.id) == [ModelCatalog.parakeetV3.id, ModelCatalog.whisperBase.id, ModelCatalog.qwen35_2B.id], "standard preset")
     check(standard.meetings.contains { $0.id == ModelCatalog.qwen35_4B.id }, "standard meetings pack")
     let light = ModelCatalog.preset(isAppleSilicon: true, memoryBytes: 8 << 30)
-    check(light.dictation.contains { $0.id == ModelCatalog.qwen35_0_8B.id } && light.name == "Apple silicon, light", "light preset")
+    check(light.dictation.allSatisfy { $0.kind == .asr } && light.name == "Apple silicon, light", "light preset: rules-only cleanup, no LLM")
+    check(ModelCatalog.preset(isAppleSilicon: false, memoryBytes: 16 << 30).meetings.contains { $0.id == ModelCatalog.qwen35_0_8B.id }
+          && [8, 16, 32].allSatisfy { gb in !ModelCatalog.preset(isAppleSilicon: true, memoryBytes: Int64(gb) << 30).dictation
+                                         .contains { $0.id == ModelCatalog.qwen35_0_8B.id } },
+          "0.8B only writes Intel meeting notes")
     let intel = ModelCatalog.preset(isAppleSilicon: false, memoryBytes: 16 << 30)
     check(intel.dictation.map(\.id) == [ModelCatalog.whisperSmall.id, ModelCatalog.whisperBase.id] && intel.dictation.allSatisfy { $0.engine == "whisper" }, "Intel preset")
     let order = AutoDownloadPolicy.order(for: standard).map(\.id)

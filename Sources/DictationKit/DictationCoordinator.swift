@@ -115,7 +115,9 @@ public final class DictationCoordinator: DictationControlling {
             } else if Services.speech.activeEngineID == nil, let any = Services.speech.availableEngines.first {
                 try? await Services.speech.prepare(modelID: any)
             }
-            guard !Task.isCancelled, let cleanup = Defaults[.cleanupModelID] else { return }
+            guard !Task.isCancelled else { return }
+            // Rules only: nothing to load, and a model chosen earlier lets go of its memory.
+            guard let cleanup = Defaults[.cleanupModelID] else { return Services.cleanup.unload(role: .cleanup) }
             if Services.models.state(of: cleanup) == .installed, !Services.cleanup.isModelReady(for: .cleanup) {
                 do { try await Services.cleanup.prepare(modelID: cleanup, role: .cleanup) } catch {
                     Log.app.error("Cleanup model not ready: \(error.localizedDescription, privacy: .public)")

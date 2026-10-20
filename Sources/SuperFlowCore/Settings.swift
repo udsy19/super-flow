@@ -126,8 +126,10 @@ public extension Defaults.Keys {
     /// `ModelDescriptor.id` of the dictation engine, the multilingual fallback, the cleanup LLM and the notes LLM.
     static let asrModelID = Key<String>("asrModelID", default: ModelCatalog.parakeetV3.id)
     static let fallbackASRModelID = Key<String>("fallbackASRModelID", default: ModelCatalog.whisperLargeV3Turbo.id)
-    /// nil = rules only.
-    static let cleanupModelID = Key<String?>("cleanupModelID", default: ModelCatalog.qwen35_2B.id)
+    /// nil = rules only, the default on the light and Intel presets (`ModelCatalog.defaultCleanupModel`).
+    static let cleanupModelID = Key<String?>("cleanupModelID",
+                                             default: ModelCatalog.defaultCleanupModel(isAppleSilicon: Machine.isAppleSilicon,
+                                                                                       memoryBytes: Machine.memoryBytes)?.id)
     static let notesModelID = Key<String>("notesModelID", default: ModelCatalog.qwen35_4B.id)
     /// Use Apple's Foundation Models on macOS 26 when available. (Apple's speech engine is an `asrModelID` choice.)
     static let useAppleIntelligence = Key<Bool>("useAppleIntelligence", default: false)

@@ -54,7 +54,12 @@ func registerHubKitTests() {
         check(HubFormat.engineDetail(ModelCatalog.nemotronStreamingEN.id, englishOnlyUser: false).contains("Other languages use Parakeet")
               && !HubFormat.engineDetail(ModelCatalog.nemotronStreamingEN.id, englishOnlyUser: true).contains("Other languages"),
               "Nemotron says what happens to other languages only when there are some")
-        check(HubFormat.cleanupChoice(ModelCatalog.qwen35_4B) == "Qwen3.5 4B (best quality)", "cleanup model choices")
+        check(HubFormat.cleanupChoice(nil, isDefault: true) == "Rules only (fastest)"
+              && HubFormat.cleanupChoice(ModelCatalog.qwen35_2B, isDefault: true) == "Qwen3.5 2B (default)"
+              && HubFormat.cleanupChoice(ModelCatalog.qwen35_2B, isDefault: false) == "Qwen3.5 2B"
+              && HubFormat.cleanupChoice(ModelCatalog.qwen35_4B, isDefault: false) == "Qwen3.5 4B (best quality)", "cleanup model choices")
+        check(HubFormat.cleanupDetail(offersBest: true).contains("4B") && !HubFormat.cleanupDetail(offersBest: false).contains("4B")
+              && HubFormat.cleanupDetail(offersBest: false).contains("Command Mode"), "cleanup detail names 4B only where it's offered")
         check(HubFormat.duration(35) == "35 s" && HubFormat.duration(42 * 60) == "42 min" && HubFormat.duration(3900) == "1 h 5 min"
               && HubFormat.duration(7200) == "2 h", "durations")
         check(HubFormat.clock(187) == "03:07" && HubFormat.clock(3765) == "1:02:45", "clock")
