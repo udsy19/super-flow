@@ -51,6 +51,10 @@ All notable changes to Super Flow are recorded here. The format follows Keep a C
 - When the chosen cleanup model failed to download or load (disk full, a damaged download, a file that won't load),
   Command Mode and transforms no longer wait on "getting ready" forever; a card says it couldn't load, names why, and
   offers Try again and Open Settings. "Getting ready" shows only while the model is still downloading or loading.
+- With Keep models in memory off, Command Mode and transforms no longer wait on "getting ready" forever: the installed
+  cleanup model loads when it is needed ("getting ready" shows for those few seconds) and the command goes on. Dictation
+  starts loading it at key-down and uses the rules alone until it is ready. Under critical memory pressure the cleanup
+  model lets go of its memory and loads again the next time it is needed.
 - Meetings caught almost nothing a quiet laptop microphone heard (2 of ~80 words on a real call). Each track is now
   levelled before speech detection, pauses and onsets are tuned for quiet speakers, every ~30 s of a track is decoded
   again with context, and the end of each track is kept at stop.

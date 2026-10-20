@@ -21,6 +21,7 @@ func registerEndToEndTests() {
     SelfTest.cases.append(("E2E.coordinatorWithFakes", { MainActor.assumeIsolated { endToEndCoordinatorFakes() } }))
     SelfTest.cases.append(("E2E.wordsSurviveFailures", { MainActor.assumeIsolated { endToEndWordsSurviveFailures() } }))
     SelfTest.cases.append(("E2E.killedMidDictation", { MainActor.assumeIsolated { endToEndKilledMidDictation() } }))
+    SelfTest.cases.append(("E2E.cleanupModelOnDemand", { MainActor.assumeIsolated { endToEndCleanupModelOnDemand() } }))
     SelfTest.cases.append(("E2E.historyUnavailable", { MainActor.assumeIsolated { endToEndHistoryUnavailable() } }))
     SelfTest.cases.append(("E2E.dictationPipeline", { MainActor.assumeIsolated { endToEndDictation() } }))
     SelfTest.cases.append(("E2E.meetingPipeline", { MainActor.assumeIsolated { endToEndMeeting() } }))
@@ -209,7 +210,8 @@ private func endToEndAutoLearn() {
         notifications.append(notification)
         actions[notification.id] = onAction
     }
-    func dismiss(notificationID: String) {}
+    var dismissed: [String] = []
+    func dismiss(notificationID: String) { dismissed.append(notificationID) }
     func showMeetingPrompt(_ prompt: MeetingPrompt, onAnswer: @escaping (MeetingPromptAnswer) -> Void) {}
     func showLiveText(_ text: String?) { if let text { liveTexts.append(text) } }
     /// Clicks a card's button.
@@ -288,6 +290,32 @@ private func endToEndAutoLearn() {
     var autoDownloadStatus: AutoDownloadStatus = .upToDate
     var readinesses: [String: Double] = [:]
     func readiness(of id: String) -> Double? { readinesses[id] }
+}
+
+/// A cleanup model that takes `loadSeconds` to load: the rules clean until it is loaded, then the text counts as the
+/// model's; transforms upper-case the selection once loaded and throw `modelNotReady` before.
+@MainActor private final class E2ELoadingCleaner: TextCleaning {
+    private let rules = TextCleaner()
+    var loadSeconds: TimeInterval = 0.8
+    private(set) var loaded = false
+    var prepares: [String] = []
+    func isModelReady(for role: LanguageModelRole) -> Bool { role == .cleanup && loaded }
+    func prepare(modelID: String, role: LanguageModelRole) async throws {
+        prepares.append(modelID)
+        try await Task.sleep(nanoseconds: UInt64(loadSeconds * 1_000_000_000))
+        loaded = true
+    }
+    func unload(role: LanguageModelRole) { if role == .cleanup { loaded = false } }
+    func warm(style: WritingStyle, level: CleanupLevel, category: AppCategory) async {}
+    func clean(_ input: CleanupInput, budget: TimeInterval) async -> CleanupOutput {
+        let output = await rules.clean(input, budget: budget)
+        return loaded ? CleanupOutput(text: output.text, actions: output.actions) : output
+    }
+    func transform(_ text: String, instruction: String) async throws -> String {
+        guard loaded else { throw TransformError.modelNotReady }
+        return text.uppercased()
+    }
+    func generate(_ input: String, instruction: String, role: LanguageModelRole) async throws -> String { throw TransformError.modelNotReady }
 }
 
 /// Swaps every service the coordinator touches for one test and puts the previous ones back.
@@ -632,6 +660,75 @@ private func e2eWords(_ text: String) -> String { text.lowercased().components(s
           "still unloadable: the card again")
     check(second.flowBar.notifications.contains { $0.id == "dictation.speechModel" && $0.variant == .error },
           "a card says the speech model didn't load and that nothing else can stand in")
+}
+
+/// Keep models in memory off: nothing loads at launch; the installed cleanup model loads at key-down (a dictation that
+/// ends first uses the rules, the next one the model), and Command Mode and transforms show "getting ready" only while
+/// it loads, then go on instead of waiting forever.
+@MainActor private func endToEndCleanupModelOnDemand() {
+    let qwen = ModelCatalog.qwen35_2B.id
+    Defaults[.keepModelsInMemory] = false
+    Defaults[.cleanupModelID] = qwen
+    Defaults[.commandModeEnabled] = true
+    defer { Defaults.reset(.keepModelsInMemory); Defaults.reset(.cleanupModelID); Defaults.reset(.commandModeEnabled) }
+    let speech = E2EScriptedSpeech()
+    let cleaner = E2ELoadingCleaner()
+    let services = E2EServices(speech: speech, models: E2EModels(), cleanup: cleaner)
+    defer { services.restore() }
+    let c = services.coordinator
+    c.activate()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+    check(cleaner.prepares.isEmpty, "keep off: nothing loads at launch (\(cleaner.prepares))")
+
+    // A dictation over before the model is ready: the rules alone, and the load carries on for the next one.
+    speech.text = "please send the invoice to priya tomorrow"
+    func dictate() {
+        services.hotkeys.send(.pressed(.pushToTalk, fnChord))
+        check(e2eWait { c.status == .listening }, "listening (\(c.status))")
+        services.audio.feed([Float](repeating: 0.1, count: 3_200))
+        services.hotkeys.send(.released(.pushToTalk, fnChord))
+        check(e2eWait { c.status == .idle }, "dictation done (\(c.status))")
+    }
+    dictate()
+    check(c.lastResult?.usedLLM == false && services.inserter.inserted.last == "Please send the invoice to priya tomorrow.",
+          "still loading: rules only, no waiting (\(String(describing: c.lastResult?.usedLLM)))")
+    check(cleaner.prepares == [qwen], "the load started at key-down: \(cleaner.prepares)")
+    check(e2eWait(5) { cleaner.loaded }, "the load finished in the background")
+    RunLoop.main.run(until: Date().addingTimeInterval(DictationLimits.debounceWindow + 0.1))
+    dictate()
+    check(c.lastResult?.usedLLM == true && cleaner.prepares == [qwen], "the next dictation uses the model, no second load")
+
+    // A transform with the model let go (memory pressure): "getting ready" only while it loads, then the result.
+    let loading = { (card: FlowBarNotification) in
+        card.id == "transform.failed" && card.title == "Just a moment - Super Flow is getting ready..." && card.variant == .alert && card.timeout == nil
+    }
+    RunLoop.main.run(until: Date().addingTimeInterval(DictationLimits.completedStateDuration + 0.2))
+    cleaner.unload(role: .cleanup)
+    services.inserter.selection = "fix this text"
+    let shown = services.flowBar.notifications.count
+    services.hotkeys.send(.pressed(.transform, KeyChord(1)))
+    check(e2eWait { services.flowBar.notifications.count > shown && loading(services.flowBar.notifications.last!) }, "getting ready while the model loads")
+    check(services.inserter.replaced.isEmpty && services.flowBar.dismissed.isEmpty, "the transform waits for the load")
+    check(e2eWait(5) { services.inserter.replaced == ["FIX THIS TEXT"] }, "then the transform goes on: \(services.inserter.replaced)")
+    check(services.flowBar.dismissed == ["transform.failed"] && services.flowBar.notifications.count == shown + 1,
+          "getting ready is dismissed after the load, and no other card (\(services.flowBar.dismissed))")
+    check(cleaner.prepares == [qwen, qwen], "one load for the transform: \(cleaner.prepares)")
+
+    // Command Mode: the load starts at key-down and the command waits on that same load, then rewrites the selection.
+    check(e2eWait { services.flowBar.states.last == .resting }, "transform finished")
+    cleaner.unload(role: .cleanup)
+    services.inserter.selection = "hello world"
+    speech.text = "make this all caps"
+    services.hotkeys.send(.pressed(.pushToTalk, fnChord))
+    check(e2eWait { c.status == .listening }, "command session listening")
+    services.hotkeys.send(.pressed(.commandMode, fnCtrl))
+    check(e2eWait { c.mode == .command }, "Command Mode")
+    services.audio.feed([Float](repeating: 0.1, count: 3_200))
+    services.hotkeys.send(.released(.commandMode, fnCtrl))
+    check(e2eWait(5) { c.status == .idle }, "Command Mode finished (\(c.status))")
+    check(services.inserter.replaced.last == "HELLO WORLD", "the command ran on the loaded model: \(services.inserter.replaced)")
+    check(cleaner.prepares == [qwen, qwen, qwen], "one load shared by key-down and the command: \(cleaner.prepares)")
+    check(services.flowBar.dismissed == ["transform.failed", "transform.failed"], "getting ready dismissed again: \(services.flowBar.dismissed)")
 }
 
 /// History can't save (a full disk) or is turned off: the text still lands, paste-last still has it, and nothing is

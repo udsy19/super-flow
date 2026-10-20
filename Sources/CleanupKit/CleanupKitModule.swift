@@ -27,6 +27,7 @@ public final class TextCleaner: TextCleaning {
     public var transformBudget: TimeInterval = 60
     /// Wall-time cap for `generate` (meeting notes over a chunk of transcript on the notes model).
     public var generateBudget: TimeInterval = 180
+    private var memoryPressure: DispatchSourceMemoryPressure?
     /// How long past its budget a request is waited for. The model checks its deadline only while decoding, so a long
     /// prefill, a hung call, or a model busy with another request (meeting notes) could otherwise hold the caller for
     /// minutes; after this the caller gets the fallback and the call finishes on its own.
@@ -36,6 +37,17 @@ public final class TextCleaner: TextCleaning {
     /// `prepare(modelID:role:)`.
     public init(model: CleanupLanguageModel? = nil, modelID: String = ModelCatalog.qwen35_2B.id) {
         if let model { engines[.cleanup] = Loaded(id: modelID, model: model) }
+        // local-models.md §4: under critical memory pressure the cleanup model lets go of its memory; the next key-down,
+        // command or transform loads it again (one dictation on the rules alone, or a short "getting ready").
+        let source = DispatchSource.makeMemoryPressureSource(eventMask: .critical, queue: .main)
+        source.setEventHandler { [weak self] in
+            MainActor.assumeIsolated {
+                Log.cleanup.info("Critical memory pressure: unloading the cleanup model until it is next needed")
+                self?.unload(role: .cleanup)
+            }
+        }
+        source.resume()
+        memoryPressure = source
     }
 
     private var model: CleanupLanguageModel? { engines[.cleanup]?.model }

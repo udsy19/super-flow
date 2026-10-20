@@ -52,6 +52,8 @@ public final class DictationCoordinator: DictationControlling {
     /// The chosen cleanup model whose last load threw (installed but unloadable): Command Mode and transforms say so
     /// instead of "getting ready". Cleared by a load that succeeds or a "Try again".
     private var cleanupLoadFailedID: String?
+    /// The cleanup model load in flight: the warm-up, key-down, Command Mode and transforms all wait on this one.
+    private var cleanupLoad: (id: String, task: Task<Void, Never>)?
     private var reportedSpeechLoadFailure = false
 
     public init() {}
@@ -127,23 +129,50 @@ public final class DictationCoordinator: DictationControlling {
         }
     }
 
-    /// Loads the chosen cleanup model, remembering a failure for `cleanupModelProblem()`.
+    /// Loads the chosen cleanup model, remembering a failure for `cleanupModelProblem()`. A load of the same model
+    /// already in flight is waited on rather than started again.
     private func loadCleanupModel(_ id: String) async {
-        do {
-            try await Services.cleanup.prepare(modelID: id, role: .cleanup)
-            if cleanupLoadFailedID == id { cleanupLoadFailedID = nil }
-        } catch {
-            Log.app.error("Cleanup model not ready: \(error.localizedDescription, privacy: .public)")
-            // Installed but it won't load (a damaged file, too little memory): dictation keeps working on the
-            // rules alone; say so once rather than quietly writing rougher text.
-            let missing: Bool = { if case .modelNotInstalled? = error as? SpeechError { return true } else { return false } }()
-            guard !missing else { return }
-            cleanupLoadFailedID = id
-            if !reportedCleanupLoadFailure {
-                reportedCleanupLoadFailure = true
-                Services.flowBar.show(DictationNotices.cleanupModelFailed()) { _ in Services.hub.showSettings(.models) }
+        if let pending = cleanupLoad, pending.id == id { return await pending.task.value }
+        let task = Task { @MainActor [weak self] in
+            do {
+                try await Services.cleanup.prepare(modelID: id, role: .cleanup)
+                if self?.cleanupLoadFailedID == id { self?.cleanupLoadFailedID = nil }
+            } catch {
+                Log.app.error("Cleanup model not ready: \(error.localizedDescription, privacy: .public)")
+                // Installed but it won't load (a damaged file, too little memory): dictation keeps working on the
+                // rules alone; say so once rather than quietly writing rougher text.
+                let missing: Bool = { if case .modelNotInstalled? = error as? SpeechError { return true } else { return false } }()
+                guard !missing, let self else { return }
+                self.cleanupLoadFailedID = id
+                if !self.reportedCleanupLoadFailure {
+                    self.reportedCleanupLoadFailure = true
+                    Services.flowBar.show(DictationNotices.cleanupModelFailed()) { _ in Services.hub.showSettings(.models) }
+                }
             }
         }
+        cleanupLoad = (id, task)
+        await task.value
+        if cleanupLoad?.task == task { cleanupLoad = nil }
+    }
+
+    /// The chosen cleanup model when it is installed but not loaded (Keep models in memory is off, or it was let go
+    /// under memory pressure) and loading it again could work; nil on Rules only, while it downloads, or after it failed
+    /// to load (a "Try again" clears that).
+    private var unloadedCleanupModel: String? {
+        guard let id = Defaults[.cleanupModelID], Services.models.state(of: id) == .installed,
+              !Services.cleanup.isModelReady(for: .cleanup), cleanupLoadFailedID != id else { return nil }
+        return id
+    }
+
+    /// Command Mode and transforms: loads an installed cleanup model that isn't loaded, with "getting ready" showing
+    /// only while it loads (about 2 s for the 2B model); the request then goes on. A failed load leaves the request to
+    /// throw `modelNotReady`, which `transformFailed` turns into the "couldn't load" card.
+    private func loadCleanupModelForRequest() async {
+        guard let id = unloadedCleanupModel else { return }
+        let notice = DictationNotices.cleanupModelLoading()
+        Services.flowBar.show(notice) { _ in }
+        await loadCleanupModel(id)
+        Services.flowBar.dismiss(notificationID: notice.id)
     }
 
     /// Why the chosen cleanup model isn't coming, or nil while it is still downloading or loading (or on Rules only).
@@ -345,6 +374,9 @@ public final class DictationCoordinator: DictationControlling {
         Services.audio.muteOutput()
         Services.audio.play(session.mode == .handsFree ? .handsFreeLock : .dictationStart)
 
+        // Keep models in memory off (or let go under memory pressure): the cleanup model starts loading at key-down. A
+        // dictation that ends before it is ready uses the rules alone; Command Mode waits for it in `runCommand`.
+        if let cleanup = unloadedCleanupModel { Task { await self.loadCleanupModel(cleanup) } }
         if session.mode != .command {
             let style = styleProfile(for: session.context)
             Task { await Services.cleanup.warm(style: style.style, level: style.level, category: session.context.app?.category ?? .other) }
@@ -547,6 +579,8 @@ public final class DictationCoordinator: DictationControlling {
     private func runCommand(_ session: Session, instruction: String, duration: TimeInterval) async {
         Services.flowBar.setState(.transformProcessing(label: "Command Mode"))
         let selection = session.selection ?? ""
+        await loadCleanupModelForRequest()
+        guard self.session === session, !session.cancelled else { return }
         do {
             let result = try await Services.cleanup.transform(selection, instruction: instruction)
             guard self.session === session, !session.cancelled else { return }
@@ -660,6 +694,7 @@ public final class DictationCoordinator: DictationControlling {
                 return
             }
             Services.flowBar.setState(.transformProcessing(label: prompt.name))
+            await self?.loadCleanupModelForRequest()
             do {
                 let result = try await Services.cleanup.transform(text, instruction: prompt.instruction)
                 if result == text {

@@ -202,6 +202,14 @@ enum DictationNotices {
                             variant: .error, timeout: nil, actions: [tryAgain, openSettings])
     }
 
+    /// "Getting ready" while Command Mode or a transform waits for the installed cleanup model to load; it stays up
+    /// until the load ends (the coordinator dismisses it), however long that takes.
+    static func cleanupModelLoading() -> FlowBarNotification {
+        var notice = transformFailed(TransformError.modelNotReady, cleanupModelChosen: true)
+        notice.timeout = nil
+        return notice
+    }
+
     /// `cleanupModelChosen` false (Rules only) turns "model not ready" into `noCleanupModel()`; with a model chosen whose
     /// download or load failed (`problem`) it is `cleanupModelUnavailable`; otherwise it is still downloading or
     /// loading, so the "getting ready" notice stays.
