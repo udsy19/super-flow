@@ -32,14 +32,11 @@
 		</dict>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>49</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.productivity</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
-	<!-- Accessibility and Input Monitoring have no prompt text of their own; Super Flow explains both on its permissions
-	     screen: Accessibility pastes the text and reads a little around the cursor, Input Monitoring lets the Fn/hotkey
-	     tap see the keys. -->
 	<key>NSAccessibilityUsageDescription</key>
 	<string>Super Flow uses Accessibility to put your spoken words into the text box you are typing in, to read a little text around the cursor for spelling and context, and to notice when a meeting app is running.</string>
 	<key>NSAppleEventsUsageDescription</key>
@@ -48,16 +45,16 @@
 	<string>Super Flow needs your computer's audio to transcribe the other participants in your meetings. Audio never leaves this Mac.</string>
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>Super Flow reads your calendar to name meetings, suggest who is speaking and remind you before a meeting starts. Nothing is written to your calendar.</string>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>Super Flow listens only while you dictate or record a meeting, and transcribes everything on this Mac.</string>
-	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Super Flow can use Apple's on-device speech recognition as an optional engine. Audio never leaves this Mac.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>
 	<string>Copyright © 2026 Udaya Vijay Anand. MIT License.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Super Flow listens only while you dictate or record a meeting, and transcribes everything on this Mac.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Super Flow can use Apple's on-device speech recognition as an optional engine. Audio never leaves this Mac.</string>
 	<key>NSSupportsAutomaticTermination</key>
 	<false/>
 	<key>NSSupportsSuddenTermination</key>
