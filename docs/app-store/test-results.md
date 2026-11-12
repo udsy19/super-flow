@@ -10,7 +10,8 @@ All runs use the real app binary: `DISTRIBUTION=appstore ./scripts/build-app.sh`
 - `DISTRIBUTION=appstore ./scripts/build-app.sh` → "Static launch checks passed" (sandbox/audio/network entitlements present; no
   disable-library-validation / apple-events / temporary-exception / get-task-allow; bundle id `com.udsy.superflow.appstore`; no
   GitHub-updater strings: `strings … | grep -ci "api.github.com\|hdiutil\|UpdateInstaller"` → 0; quarantine xattrs stripped).
-- Direct edition: `swift build -c release` + `SuperFlowSelfTest` — see bottom.
+- Direct edition: `./scripts/build-app.sh` → static checks pass (unchanged); `swift build -c release --product SuperFlowSelfTest && .build/release/SuperFlowSelfTest` → "All self-tests passed." (model-dependent cases skipped: no dev models).
+- `./scripts/package-appstore.sh` without credentials → exit 2, `error: missing APPSTORE_APP_IDENTITY APPSTORE_INSTALLER_IDENTITY APPSTORE_PROVISIONING_PROFILE.`
 
 ## Probe run 2 (`--probe-models`), 18:00–18:06 EST (test WAV: `say -v Samantha -o test.aiff "Um, so I think we should, uh, ship the quarterly report on Friday. Actually no, let's ship it on Monday after the review."` → `afconvert -f WAVE -d LEI16@16000 -c 1`, 7.9 s, copied into the container's tmp)
 

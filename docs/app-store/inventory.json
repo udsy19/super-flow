@@ -2,7 +2,7 @@
   "app": "Super Flow",
   "repo": "udsy19/super-flow",
   "branch": "release/macos-app-store",
-  "commit": "SEE_GIT_LOG",
+  "commit": "8ca7a9c",
   "bundleIds": {
     "direct": "com.udsy.superflow",
     "appstore": "com.udsy.superflow.appstore"
