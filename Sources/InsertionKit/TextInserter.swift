@@ -33,7 +33,12 @@ final class TextInserter: TextInserting {
     func insert(_ text: String, actions: [PostInsertAction], method: InsertionMethod) async -> InsertionOutcome {
         let field = FocusedField.current()
         if field?.isSecure == true || SecureInput.isHeldByFrontmostApp { return .blockedSecureField }
-        guard AXIsProcessTrusted() else {
+        if method == .copyOnly {
+            if !text.isEmpty { copyToClipboard(text) }
+            return .notInserted(reason: "copy_only")
+        }
+        // Posting ⌘V needs Accessibility (the Store edition asks for it through CGRequestPostEventAccess).
+        guard Permissions.isAccessibilityTrusted else {
             if !text.isEmpty { copyToClipboard(text) }
             return .notInserted(reason: "accessibility_not_trusted")
         }
@@ -49,7 +54,7 @@ final class TextInserter: TextInserting {
     }
 
     func selectedText() async -> String? {
-        guard AXIsProcessTrusted(), !SecureInput.isHeldByFrontmostApp else { return nil }
+        guard Permissions.isAccessibilityTrusted, !SecureInput.isHeldByFrontmostApp else { return nil }
         let field = FocusedField.current()
         if field?.isSecure == true { return nil }
         if let text = field?.selectedText, !text.isEmpty { return text }

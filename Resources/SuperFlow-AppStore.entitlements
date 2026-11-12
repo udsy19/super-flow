@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Mac App Store edition (docs/app-store/entitlements.md). Minimal set; no Apple Events, no library-validation
+	     exception (embedded frameworks are signed with the same team identity), no temporary exceptions. -->
+	<key>com.apple.security.app-sandbox</key><true/>
+	<!-- Dictation and meeting microphone. -->
+	<key>com.apple.security.device.audio-input</key><true/>
+	<!-- Listed too until an experiment shows which key the sandbox checks for AVAudioEngine input (docs/app-store/entitlements.md). -->
+	<key>com.apple.security.device.microphone</key><true/>
+	<!-- Model downloads from huggingface.co (passive, checksum-verified data). -->
+	<key>com.apple.security.network.client</key><true/>
+	<!-- Meeting titles and attendees (EventKit, read-only). -->
+	<key>com.apple.security.personal-information.calendars</key><true/>
+	<!-- "Import from Super Flow (direct download)" and meeting export: only files and folders the user picks. -->
+	<key>com.apple.security.files.user-selected.read-write</key><true/>
+</dict>
+</plist>

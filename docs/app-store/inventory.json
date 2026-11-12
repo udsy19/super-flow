@@ -1,0 +1,273 @@
+{
+  "app": "Super Flow",
+  "repo": "udsy19/super-flow",
+  "branch": "release/macos-app-store",
+  "commit": "SEE_GIT_LOG",
+  "bundleIds": {
+    "direct": "com.udsy.superflow",
+    "appstore": "com.udsy.superflow.appstore"
+  },
+  "features": [
+    {
+      "name": "File/offline transcription (Parakeet via FluidAudio, whisper.cpp)",
+      "classification": "compatible",
+      "storeStatus": "working in sandbox",
+      "evidence": "docs/app-store/test-results.md: both engines transcribed the test WAV in the sandboxed build"
+    },
+    {
+      "name": "Local LLM cleanup (llama.cpp, Qwen3.5)",
+      "classification": "compatible",
+      "storeStatus": "working in sandbox",
+      "evidence": "docs/app-store/test-results.md: Qwen3.5 0.8B cleaned the transcript in 0.89 s"
+    },
+    {
+      "name": "Speaker diarization",
+      "classification": "compatible",
+      "storeStatus": "working in sandbox",
+      "evidence": "docs/app-store/test-results.md: 1 segment/1 speaker on single-voice WAV"
+    },
+    {
+      "name": "Model downloads (HF, pinned hashes, consent)",
+      "classification": "compatible-with-config",
+      "storeStatus": "working in sandbox; consent UI added",
+      "evidence": "docs/app-store/test-results.md: 4 models downloaded into the container, Core ML files checked against PinnedModelFiles"
+    },
+    {
+      "name": "Microphone capture",
+      "classification": "compatible-with-config",
+      "storeStatus": "prompt fires; capture starts",
+      "evidence": "docs/app-store/test-results.md: TCC kTCCServiceMicrophone prompt; a human allowed it in run 1"
+    },
+    {
+      "name": "System audio (Core Audio process tap)",
+      "classification": "compatible-with-config",
+      "storeStatus": "tap created; audio content unverified",
+      "evidence": "docs/app-store/test-results.md: tap+aggregate created; kTCCServiceAudioCapture prompt"
+    },
+    {
+      "name": "Push-to-talk / Fn hotkey (listen-only CGEventTap)",
+      "classification": "unverified-needs-experiment",
+      "storeStatus": "needs Input Monitoring granted manually; human run",
+      "evidence": "docs/app-store/test-results.md: tap object created, no prompt"
+    },
+    {
+      "name": "Text insertion (CGEvent Cmd-V paste)",
+      "classification": "unverified-needs-experiment",
+      "storeStatus": "needs manual Accessibility grant; 2.4.5 review risk; copy-only fallback added",
+      "evidence": "docs/app-store/test-results.md: CGPreflightPostEventAccess=false; prompt agent sandbox-denied"
+    },
+    {
+      "name": "Copy-only insertion fallback",
+      "classification": "compatible",
+      "storeStatus": "implemented (Settings > System > Paste automatically off)",
+      "evidence": "Sources/InsertionKit/TextInserter.swift"
+    },
+    {
+      "name": "AX context / AX value insertion / secure-field via AX",
+      "classification": "incompatible-confirmed",
+      "storeStatus": "gated (degrades to no context)",
+      "evidence": "docs/app-store/privacy-and-permissions.md"
+    },
+    {
+      "name": "Meeting detection (native apps via Core Audio process objects)",
+      "classification": "compatible",
+      "storeStatus": "signals readable in sandbox",
+      "evidence": "docs/app-store/test-results.md: process object list OSStatus 0"
+    },
+    {
+      "name": "Meeting detection (browser tabs via AX window titles)",
+      "classification": "incompatible-confirmed",
+      "storeStatus": "not available in Store",
+      "evidence": "docs/app-store/architecture.md"
+    },
+    {
+      "name": "Calendar (EventKit)",
+      "classification": "compatible-with-config",
+      "storeStatus": "entitlement added; prompt path needs human run",
+      "evidence": "docs/app-store/test-results.md"
+    },
+    {
+      "name": "Meeting recording + notes",
+      "classification": "compatible-with-config",
+      "storeStatus": "components proven; end-to-end needs human run",
+      "evidence": "docs/app-store/test-results.md"
+    },
+    {
+      "name": "Self-updater",
+      "classification": "incompatible-confirmed",
+      "storeStatus": "compiled out of Store",
+      "evidence": "build check: no GitHub releases URL in binary"
+    },
+    {
+      "name": "Apple Events",
+      "classification": "compatible",
+      "storeStatus": "removed (unused)",
+      "evidence": "docs/app-store/entitlements.md"
+    },
+    {
+      "name": "Data import from direct edition",
+      "classification": "compatible-with-config",
+      "storeStatus": "implemented; staging proven with fixture; panel needs human run",
+      "evidence": "docs/app-store/test-results.md"
+    },
+    {
+      "name": "Open at login (SMAppService)",
+      "classification": "compatible",
+      "storeStatus": "unchanged",
+      "evidence": "SMAppService.mainApp is sandbox-supported"
+    }
+  ],
+  "dependencies": [
+    {
+      "name": "FluidAudio",
+      "version": "0.17.7",
+      "license": "Apache-2.0",
+      "kind": "swiftpm-source",
+      "bundled": true,
+      "sandboxOK": true
+    },
+    {
+      "name": "NemoTextProcessing.xcframework",
+      "version": "0.3.1",
+      "license": "Apache-2.0",
+      "kind": "binary-static",
+      "bundled": true,
+      "sandboxOK": true
+    },
+    {
+      "name": "whisper.cpp",
+      "version": "b5454",
+      "license": "MIT",
+      "kind": "xcframework-dynamic",
+      "bundled": true,
+      "sandboxOK": true
+    },
+    {
+      "name": "llama.cpp",
+      "version": "b11721",
+      "license": "MIT",
+      "kind": "xcframework-dynamic",
+      "bundled": true,
+      "sandboxOK": true
+    },
+    {
+      "name": "Silero VAD v6.2.0 ggml",
+      "version": "6.2.0",
+      "license": "MIT",
+      "kind": "model",
+      "bundled": true,
+      "sandboxOK": true
+    },
+    {
+      "name": "Parakeet TDT 0.6B v3 CoreML",
+      "version": "7dd20fe",
+      "license": "CC-BY-4.0",
+      "kind": "model-download",
+      "bundled": false,
+      "sandboxOK": true
+    },
+    {
+      "name": "Nemotron Speech Streaming EN 0.6B CoreML",
+      "version": "e673531",
+      "license": "NVIDIA Open Model License",
+      "kind": "model-download",
+      "bundled": false,
+      "sandboxOK": null
+    },
+    {
+      "name": "Whisper base/small/large-v3-turbo ggml",
+      "version": "main+sha256",
+      "license": "MIT",
+      "kind": "model-download",
+      "bundled": false,
+      "sandboxOK": true
+    },
+    {
+      "name": "Qwen3.5 0.8B/2B/4B, Qwen3-4B-Instruct-2507 GGUF",
+      "version": "sha256-pinned",
+      "license": "Apache-2.0",
+      "kind": "model-download",
+      "bundled": false,
+      "sandboxOK": true
+    },
+    {
+      "name": "Speaker diarization Community-1 CoreML",
+      "version": "7eab74f",
+      "license": "CC-BY-4.0",
+      "kind": "model-download",
+      "bundled": false,
+      "sandboxOK": true
+    },
+    {
+      "name": "LocalVQE 1.3 CoreML",
+      "version": "4205430",
+      "license": "Apache-2.0",
+      "kind": "model-download",
+      "bundled": false,
+      "sandboxOK": null
+    }
+  ],
+  "models": [
+    {
+      "id": "parakeet-tdt-0.6b-v3",
+      "download": "470 MB",
+      "minRAM": "1 GB"
+    },
+    {
+      "id": "nemotron-speech-streaming-en-0.6b-1120ms",
+      "download": "627 MB",
+      "minRAM": "1 GB"
+    },
+    {
+      "id": "ggml-base-q5_1",
+      "download": "60 MB",
+      "minRAM": "256 MB"
+    },
+    {
+      "id": "ggml-small-q5_1",
+      "download": "190 MB",
+      "minRAM": "512 MB"
+    },
+    {
+      "id": "ggml-large-v3-turbo-q5_0",
+      "download": "574 MB",
+      "minRAM": "1 GB"
+    },
+    {
+      "id": "Qwen3.5-0.8B-Q4_K_M",
+      "download": "533 MB",
+      "minRAM": "1 GB"
+    },
+    {
+      "id": "Qwen3.5-2B-Q4_K_M",
+      "download": "1.28 GB",
+      "minRAM": "2 GB"
+    },
+    {
+      "id": "Qwen3.5-4B-Q4_K_M",
+      "download": "2.74 GB",
+      "minRAM": "4 GB"
+    },
+    {
+      "id": "Qwen3-4B-Instruct-2507-Q4_K_M",
+      "download": "2.50 GB",
+      "minRAM": "6 GB"
+    },
+    {
+      "id": "speaker-diarization-community-1",
+      "download": "22 MB",
+      "minRAM": "256 MB"
+    },
+    {
+      "id": "localvqe-1.3",
+      "download": "20 MB",
+      "minRAM": "128 MB"
+    },
+    {
+      "id": "ggml-silero-v6.2.0 (bundled)",
+      "download": "0.9 MB",
+      "minRAM": "16 MB"
+    }
+  ],
+  "status": "FUNCTIONAL VALIDATION PENDING"
+}

@@ -1,3 +1,5 @@
+// The Mac App Store edition updates through the Store: this module compiles to nothing there (docs/app-store/architecture.md).
+#if !APP_STORE
 import AppKit
 import Combine
 import SuperFlowCore
@@ -192,3 +194,4 @@ final class Updater: Updating {
         }
     }
 }
+#endif

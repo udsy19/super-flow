@@ -75,7 +75,7 @@ final class HotkeyMonitor: HotkeyMonitoring {
     /// Matches the tap to the permissions granted right now. It is rebuilt only when they change (rebuilding releases
     /// held keys), or retried while a permitted tap failed to come up.
     private func connectTap() {
-        let trusted = AXIsProcessTrusted()
+        let trusted = Permissions.isAccessibilityTrusted
         let canListen = trusted || CGPreflightListenEventAccess()
         let granted: HotkeyTapMode? = trusted ? .active : canListen ? .listenOnly : nil
         guard granted != grantedMode || (granted != nil && mode == nil) else { return }

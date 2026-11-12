@@ -398,11 +398,15 @@ struct TryItStep: View {
 struct ModelFooter: View {
     @EnvironmentObject private var state: HubState
     @EnvironmentObject private var store: HubStore
+    // Read so the Store edition's download question goes away the moment it is answered.
+    @Default(.modelDownloadConsentAnswered) private var consentAnswered
+    @Default(.autoDownloadModels) private var autoDownload
 
     var body: some View {
         let _ = store.modelRevision
-        // The practice step shows the speech model's progress itself.
-        if let summary = ModelSummary.current(), state.onboardingStep != .tryIt || summary.speechReady {
+        if ModelSummary.needsDownloadConsent {
+            ModelDownloadConsent()
+        } else if let summary = ModelSummary.current(), state.onboardingStep != .tryIt || summary.speechReady {
             HStack(spacing: 10) {
                 Image(systemName: summary.isComplete ? "checkmark.circle.fill" : "arrow.down.circle")
                     .font(.system(size: 12, weight: .medium))
@@ -415,6 +419,32 @@ struct ModelFooter: View {
                 }
             }
             .frame(height: 20)
+        }
+    }
+}
+
+/// Store edition (guideline 4.2.3): the models are named with their total size and download only after the user says so.
+struct ModelDownloadConsent: View {
+    @EnvironmentObject private var store: HubStore
+
+    var body: some View {
+        let _ = store.modelRevision
+        let size = HubFormat.bytes(ModelSummary.pendingBytes())
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Super Flow runs its speech and text models on this Mac. They download once from Hugging Face: \(size).")
+                .hubText(.xs, .regular, HubColor.tertiary).fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Button("Download \(size)") {
+                    Defaults[.modelDownloadConsentAnswered] = true
+                    Defaults[.autoDownloadModels] = true
+                    Services.models?.startAutomaticDownloads()
+                }
+                .buttonStyle(HubButtonStyle(variant: .primary, size: .xs))
+                Button("Not now") {
+                    Defaults[.modelDownloadConsentAnswered] = true
+                }
+                .buttonStyle(HubButtonStyle(variant: .ghost, size: .xs))
+            }
         }
     }
 }

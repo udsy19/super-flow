@@ -133,8 +133,13 @@ public extension Defaults.Keys {
     static let notesModelID = Key<String>("notesModelID", default: ModelCatalog.qwen35_4B.id)
     /// Use Apple's Foundation Models on macOS 26 when available. (Apple's speech engine is an `asrModelID` choice.)
     static let useAppleIntelligence = Key<Bool>("useAppleIntelligence", default: false)
-    /// Owner decision: models download automatically in the background after install (`AutoDownloadPolicy`).
-    static let autoDownloadModels = Key<Bool>("autoDownloadModels", default: true)
+    /// Owner decision: models download automatically in the background after install (`AutoDownloadPolicy`). The Store
+    /// edition starts with it off and turns it on only when the user agrees to the disclosed download size (guideline
+    /// 4.2.3, docs/app-store/model-and-asset-strategy.md).
+    static let autoDownloadModels = Key<Bool>("autoDownloadModels", default: !Distribution.isAppStore)
+    /// Store edition: the user answered the download question (either way), so it is not asked again; Settings › Models
+    /// keeps the switch.
+    static let modelDownloadConsentAnswered = Key<Bool>("modelDownloadConsentAnswered", default: false)
     /// When the disk check last refused to download, in seconds since 1970 (0 = never); retried daily.
     static let autoDownloadDiskRetryAfter = Key<Double>("autoDownloadDiskRetryAfter", default: 0)
     /// Keep models resident between dictations (on by default on ≥ 16 GB Macs; the Models pane sets it at first run).

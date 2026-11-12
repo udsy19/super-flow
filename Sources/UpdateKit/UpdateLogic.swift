@@ -1,3 +1,5 @@
+// The Mac App Store edition updates through the Store: this module compiles to nothing there (docs/app-store/architecture.md).
+#if !APP_STORE
 import Foundation
 
 // The pure parts of updating: versions, the GitHub release feed, the check schedule and the idle test.
@@ -211,3 +213,4 @@ public enum UpdateSchedule {
         state.secondsSinceInput >= idleThreshold && !state.isDictating && !state.isRecordingMeeting
     }
 }
+#endif

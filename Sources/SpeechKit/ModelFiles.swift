@@ -95,6 +95,8 @@ enum ModelSource {
     static let huggingFace = "https://huggingface.co"
 
     static var base: String {
+        // The Store edition downloads only from the fixed origin its pinned hashes were taken from.
+        if Distribution.isAppStore { return huggingFace }
         let mirror = Defaults[.modelMirrorURL].trimmingCharacters(in: .whitespacesAndNewlines)
         return mirror.isEmpty ? huggingFace : (mirror.hasSuffix("/") ? String(mirror.dropLast()) : mirror)
     }
@@ -146,6 +148,14 @@ enum ModelSource {
         guard found == required else {
             Log.models.error("\(repository, privacy: .public) is missing \(required.subtracting(found).sorted(), privacy: .public)")
             throw ModelError.http(404)
+        }
+        // The Store edition trusts only hashes compiled into the app: every file must be pinned and match.
+        if Distribution.isAppStore {
+            let pinned = PinnedModelFiles.digests[layout.model.id] ?? [:]
+            if let unpinned = files.first(where: { pinned[$0.path] == nil || pinned[$0.path] != $0.digest }) {
+                Log.models.error("\(unpinned.path, privacy: .public) of \(repository, privacy: .public) doesn't match its pinned hash")
+                throw ModelError.checksumMismatch
+            }
         }
         return files
     }

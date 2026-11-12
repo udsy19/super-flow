@@ -1,6 +1,9 @@
 #!/bin/bash
 # Builds build/Super Flow.app (release by default; `--debug` for a fast debug build; UNIVERSAL=1 for Apple silicon +
 # Intel) and signs it with the project-local identity from scripts/signing-setup.sh (falls back to ad-hoc).
+# DISTRIBUTION=appstore builds the Mac App Store edition instead (docs/app-store/README.md): compiled with -DAPP_STORE,
+# bundle id $STORE_BUNDLE_ID, sandboxed entitlements, assembled at build/appstore/Super Flow.app and signed ad-hoc for
+# local sandbox testing; scripts/package-appstore.sh re-signs it for the Store and wraps it in a .pkg.
 # The whisper.cpp and llama.cpp frameworks (SwiftPM binary targets) are embedded in Contents/Frameworks, the
 # executable gets the matching rpath, and every nested piece is signed before the bundle that seals it. The cue
 # sounds and the bundled Silero VAD go into Contents/Resources. The script ends with static launch checks (nothing is
@@ -8,25 +11,40 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"; cd "$ROOT"
 CONFIG=release; [ "${1:-}" = "--debug" ] && CONFIG=debug
+DISTRIBUTION="${DISTRIBUTION:-direct}"
+# The Store edition's bundle id: the one place it is defined (change it here before registering in App Store Connect).
+STORE_BUNDLE_ID="com.udsy.superflow.appstore"
+case "$DISTRIBUTION" in
+  direct) SWIFT_FLAGS=(); OUT="$ROOT/build"; ENT="$ROOT/Resources/SuperFlow.entitlements" ;;
+  appstore) SWIFT_FLAGS=(-Xswiftc -DAPP_STORE); OUT="$ROOT/build/appstore"; ENT="$ROOT/Resources/SuperFlow-AppStore.entitlements" ;;
+  *) echo "DISTRIBUTION must be direct or appstore (got $DISTRIBUTION)" >&2; exit 1 ;;
+esac
+# bash 3.2 + set -u: an empty array expands only through this guard.
+FLAGS=(${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"})
 PRODUCTS=(SuperFlow)
 if [ "${UNIVERSAL:-0}" = 1 ]; then
   # Build each architecture separately (the CLT toolchain has no multi-arch build) and merge with lipo.
   for arch in arm64 x86_64; do
-    for product in "${PRODUCTS[@]}"; do swift build -c "$CONFIG" --product "$product" --triple "$arch-apple-macosx14.0"; done
+    for product in "${PRODUCTS[@]}"; do swift build -c "$CONFIG" ${FLAGS[@]+"${FLAGS[@]}"} --product "$product" --triple "$arch-apple-macosx14.0"; done
   done
   ARM="$(swift build -c "$CONFIG" --triple arm64-apple-macosx14.0 --show-bin-path)"
   INTEL="$(swift build -c "$CONFIG" --triple x86_64-apple-macosx14.0 --show-bin-path)"
   BIN="$ROOT/build/universal"; mkdir -p "$BIN"; RES_BIN="$ARM"
   for product in "${PRODUCTS[@]}"; do lipo -create -output "$BIN/$product" "$ARM/$product" "$INTEL/$product"; done
 else
-  for product in "${PRODUCTS[@]}"; do swift build -c "$CONFIG" --product "$product"; done
+  for product in "${PRODUCTS[@]}"; do swift build -c "$CONFIG" ${FLAGS[@]+"${FLAGS[@]}"} --product "$product"; done
   BIN="$(swift build -c "$CONFIG" --show-bin-path)"; RES_BIN="$BIN"
 fi
 
-APP="$ROOT/build/Super Flow.app"
+APP="$OUT/Super Flow.app"
 rm -rf "$APP"; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 for product in "${PRODUCTS[@]}"; do cp "$BIN/$product" "$APP/Contents/MacOS/$product"; done
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
+if [ "$DISTRIBUTION" = appstore ]; then
+  # Own bundle id (both editions can be installed side by side), and no Apple Events: the Store edition sends none.
+  /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $STORE_BUNDLE_ID" "$APP/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Delete :NSAppleEventsUsageDescription" "$APP/Contents/Info.plist"
+fi
 # Cue sounds (scripts/make-sounds.swift) and the bundled models (the Silero VAD, so VAD never downloads).
 cp -R "$ROOT/Resources/Sounds" "$APP/Contents/Resources/Sounds"
 cp -R "$ROOT/Resources/Models" "$APP/Contents/Resources/Models"
@@ -62,8 +80,14 @@ fi
 cp "$ROOT/build/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 
 KC="$ROOT/.signing/super-flow.keychain-db"
-ENT="$ROOT/Resources/SuperFlow.entitlements"
-if [ -f "$KC" ]; then
+if [ "$DISTRIBUTION" = appstore ]; then
+  # App Store uploads are rejected when any bundled file carries com.apple.quarantine (downloaded xcframeworks can).
+  chmod -R u+w "$APP"; xattr -cr "$APP"
+  # Ad-hoc, inside-out, sandbox entitlements on the app only (frameworks carry none). The sandbox is enforced for
+  # ad-hoc code, so this copy is the local test bed; package-appstore.sh re-signs with the Store identities.
+  for fw in "${FRAMEWORKS[@]}"; do codesign -f -s - "$fw"; done
+  codesign -f -s - --entitlements "$ENT" "$APP"
+elif [ -f "$KC" ]; then
   security unlock-keychain -p superflow "$KC"
   ORIG=()
   while IFS= read -r line; do line="${line#"${line%%[![:space:]]*}"}"; line="${line//\"/}"; [ -n "$line" ] && ORIG+=("$line"); done < <(security list-keychains -d user)
@@ -84,14 +108,27 @@ codesign --verify --deep --strict "$APP"
 # make it abort at launch is checked on disk.
 fail() { echo "error: $*" >&2; exit 1; }
 EXE="$APP/Contents/MacOS/SuperFlow"
-# Embedded frameworks are signed without an Apple Team ID, so the hardened runtime refuses to load them unless library
-# validation is off. Without this the app aborts at launch; fail the build instead.
-if [ ${#FRAMEWORKS[@]} -gt 0 ] && ! codesign -d --entitlements :- "$APP" 2>/dev/null | grep -q disable-library-validation; then
-  fail "$APP embeds frameworks but lacks com.apple.security.cs.disable-library-validation"
+SIGNED_ENT="$(codesign -d --entitlements :- "$APP" 2>/dev/null)"
+if [ "$DISTRIBUTION" = appstore ]; then
+  # Store: sandboxed, and none of the exceptions App Review rejects (docs/app-store/entitlements.md).
+  for ent in com.apple.security.app-sandbox com.apple.security.device.audio-input com.apple.security.network.client; do
+    grep -q "$ent" <<< "$SIGNED_ENT" || fail "entitlement $ent missing"
+  done
+  for ent in disable-library-validation allow-unsigned-executable-memory automation.apple-events temporary-exception get-task-allow; do
+    if grep -q "$ent" <<< "$SIGNED_ENT"; then fail "the Store edition must not carry $ent"; fi
+  done
+  [ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$APP/Contents/Info.plist")" = "$STORE_BUNDLE_ID" ] || fail "bundle id is not $STORE_BUNDLE_ID"
+  if strings -a "$EXE" | grep -q 'api.github.com/repos/.*/releases'; then fail "the Store edition still contains the GitHub updater"; fi
+else
+  # Embedded frameworks are signed without an Apple Team ID, so the hardened runtime refuses to load them unless library
+  # validation is off. Without this the app aborts at launch; fail the build instead.
+  if [ ${#FRAMEWORKS[@]} -gt 0 ] && ! grep -q disable-library-validation <<< "$SIGNED_ENT"; then
+    fail "$APP embeds frameworks but lacks com.apple.security.cs.disable-library-validation"
+  fi
+  for ent in com.apple.security.device.audio-input com.apple.security.automation.apple-events; do
+    grep -q "$ent" <<< "$SIGNED_ENT" || fail "entitlement $ent missing"
+  done
 fi
-for ent in com.apple.security.device.audio-input com.apple.security.automation.apple-events; do
-  codesign -d --entitlements :- "$APP" 2>/dev/null | grep -q "$ent" || fail "entitlement $ent missing"
-done
 # rpaths: the bundle's Frameworks folder, and nothing pointing back into the build tree.
 RPATHS="$(otool -l "$EXE" | awk '/LC_RPATH/ {getline; getline; print $2}')"
 grep -qx '@executable_path/../Frameworks' <<< "$RPATHS" || fail "executable lacks the @executable_path/../Frameworks rpath"
@@ -106,6 +143,7 @@ for bin in "${BINARIES[@]}"; do
     [ -e "$APP/Contents/Frameworks/$rel" ] || fail "$(basename "$bin") depends on $dep, which is not in Contents/Frameworks"
   done < <(otool -L "$bin" | awk 'NR > 1 && $1 ~ /^@rpath\// { print $1 }' | sort -u)
   otool -L "$bin" | awk 'NR > 1 { print $1 }' | grep -q '\.build/' && fail "$(basename "$bin") links into the build tree"
+  if otool -L "$bin" | awk 'NR > 1 { print $1 }' | grep -qE '^/(opt/homebrew|usr/local)/'; then fail "$(basename "$bin") links a Homebrew library"; fi
 done
 # Resources the app expects at runtime.
 for res in Resources/AppIcon.icns Resources/Sounds/dictationStart.wav Resources/Sounds/notificationError.wav \
@@ -114,8 +152,9 @@ for res in Resources/AppIcon.icns Resources/Sounds/dictationStart.wav Resources/
 done
 # Info.plist: the executable name and every usage description the permissions need.
 [ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "$APP/Contents/Info.plist")" = "SuperFlow" ] || fail "CFBundleExecutable is not SuperFlow"
-for key in NSMicrophoneUsageDescription NSAudioCaptureUsageDescription NSCalendarsFullAccessUsageDescription NSAppleEventsUsageDescription \
-           NSAccessibilityUsageDescription; do
+KEYS=(NSMicrophoneUsageDescription NSAudioCaptureUsageDescription NSCalendarsFullAccessUsageDescription NSAccessibilityUsageDescription)
+[ "$DISTRIBUTION" = direct ] && KEYS+=(NSAppleEventsUsageDescription)
+for key in "${KEYS[@]}"; do
   /usr/libexec/PlistBuddy -c "Print $key" "$APP/Contents/Info.plist" >/dev/null 2>&1 || fail "Info.plist lacks $key"
 done
 echo "Static launch checks passed: entitlements, rpaths, @rpath dependencies, resources, Info.plist"

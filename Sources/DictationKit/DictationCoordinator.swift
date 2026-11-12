@@ -556,6 +556,9 @@ public final class DictationCoordinator: DictationControlling {
         case .inserted:
             if output.usedLLM, output.text != transcript.text { showCompleted(.cleanupCompleted, session) } else { end(session, status: .idle) }
             if Defaults[.shouldAutoLearnWords], !text.isEmpty { watchEdits(of: dictation) }
+        case .notInserted(let reason) where reason == "copy_only":
+            Services.flowBar.show(DictationNotices.transformCopied()) { _ in }
+            end(session, status: .idle)
         case .notInserted(let reason) where reason == "accessibility_not_trusted":
             Services.flowBar.show(DictationNotices.accessibilityRequired()) { _ in Permissions.open(.accessibility) }
             end(session, status: .idle)

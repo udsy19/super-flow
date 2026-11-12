@@ -127,10 +127,17 @@ final class PermissionCenter: ObservableObject {
                 Task { @MainActor in _ = await Permissions.requestMicrophone(); refresh() }
             } else { Permissions.open(.microphone) }
         case .accessibility:
-            // The system prompt offers System Settings itself; later clicks go straight there.
-            if askedAccessibility { Permissions.open(.accessibility) } else { askedAccessibility = true; Permissions.requestAccessibility() }
+            // The system prompt offers System Settings itself; later clicks go straight there. In the sandbox the prompt
+            // never shows (its agent's mach-lookup is denied, docs/app-store/test-results.md), so the pane opens at once.
+            if askedAccessibility { Permissions.open(.accessibility) } else {
+                askedAccessibility = true
+                if !Permissions.requestAccessibility(), Distribution.isAppStore { Permissions.open(.accessibility) }
+            }
         case .inputMonitoring:
-            if status(.inputMonitoring) == .notDetermined { _ = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent) } else { Permissions.open(.inputMonitoring) }
+            if status(.inputMonitoring) == .notDetermined {
+                let granted = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
+                if !granted, Distribution.isAppStore { Permissions.open(.inputMonitoring) }
+            } else { Permissions.open(.inputMonitoring) }
         case .systemAudio:
             guard let audio = Services.audio else { Permissions.open(.audioCapture); return }
             Task { @MainActor in
