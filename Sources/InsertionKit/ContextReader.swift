@@ -13,12 +13,15 @@ final class ContextReader: AppContextReading {
         guard let app = NSWorkspace.shared.frontmostApplication, let bundleID = app.bundleIdentifier else { return nil }
         var url: String?
         var windowTitle: String?
+        #if !APP_STORE
+        // Window titles and page URLs come from Accessibility, which the Store edition does not use on other apps.
         if AXIsProcessTrusted() {
             let element = AX.application(app.processIdentifier)
             let window = AX.element(element, kAXFocusedWindowAttribute)
             windowTitle = window.flatMap { AX.string($0, kAXTitleAttribute) }.flatMap { $0.isEmpty ? nil : $0 }
             if AppLists.browsers.contains(bundleID) { url = Self.pageURL(app: element, window: window) }
         }
+        #endif
         return AppRecord(bundleID: bundleID, name: app.localizedName ?? bundleID, url: url, windowTitle: windowTitle,
                          category: AppLists.category(bundleID: bundleID, url: url))
     }
@@ -37,6 +40,7 @@ final class ContextReader: AppContextReading {
         return context
     }
 
+    #if !APP_STORE
     /// The page in a browser: the URL of the web area holding the focus, else the window's document.
     private static func pageURL(app: AXUIElement, window: AXUIElement?) -> String? {
         func web(_ url: URL?) -> String? { ["http", "https"].contains(url?.scheme?.lowercased()) ? url?.absoluteString : nil }
@@ -48,4 +52,5 @@ final class ContextReader: AppContextReading {
         }
         return window.flatMap { AX.string($0, kAXDocumentAttribute) }.flatMap { web(URL(string: $0)) }
     }
+    #endif
 }

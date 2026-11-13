@@ -723,11 +723,14 @@ struct PrivacyPane: View {
                 }
                 PrivacyFact(symbol: "eye.slash", title: "No telemetry", detail: "No analytics, crash reports or tracking. There's no account.")
             }
-            SettingsSection(title: "Context") {
-                RowsCard {
-                    SettingSwitch("Context awareness",
-                              detail: "Reads a little text around the cursor to spell names right and continue your sentence.",
-                              .useAxContext)
+            // Reading text around the cursor needs Accessibility inspection of other apps, which the Store edition doesn't do.
+            if !Distribution.isAppStore {
+                SettingsSection(title: "Context") {
+                    RowsCard {
+                        SettingSwitch("Context awareness",
+                                  detail: "Reads a little text around the cursor to spell names right and continue your sentence.",
+                                  .useAxContext)
+                    }
                 }
             }
             SettingsSection(title: "What to keep") {

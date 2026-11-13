@@ -42,7 +42,7 @@ final class TextInserter: TextInserting {
             if !text.isEmpty { copyToClipboard(text) }
             return .notInserted(reason: "accessibility_not_trusted")
         }
-        if !text.isEmpty, !(method == .accessibility && field?.insert(text) == true),
+        if !text.isEmpty, !(Self.writesThroughAccessibility(method) && field?.insert(text) == true),
            let reason = await paste(text, fallback: method == .paste ? field : nil) {
             return .notInserted(reason: reason)
         }
@@ -136,6 +136,14 @@ final class TextInserter: TextInserting {
         let text = pasteboard.string(forType: .string)
         saved.restore(to: pasteboard)
         return text?.isEmpty == false ? text : nil
+    }
+
+    private static func writesThroughAccessibility(_ method: InsertionMethod) -> Bool {
+        #if APP_STORE
+        false
+        #else
+        method == .accessibility
+        #endif
     }
 
     private static func sleep(_ seconds: TimeInterval) async {

@@ -56,6 +56,10 @@ final class SystemMeetingEnvironment: MeetingEnvironment {
     }
 
     func windowTitles(of bundleID: String) -> [String] {
+        #if APP_STORE
+        // Store edition: no Accessibility reads of other apps, so browser meetings aren't recognised by their tab title.
+        return []
+        #else
         guard AXIsProcessTrusted() else { return [] }
         return NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).flatMap { app -> [String] in
             let element = AXUIElementCreateApplication(app.processIdentifier)
@@ -69,6 +73,7 @@ final class SystemMeetingEnvironment: MeetingEnvironment {
                 return title as? String
             }
         }
+        #endif
     }
 
     func calendarEvents(from start: Date, to end: Date) -> [CalendarEvent] {

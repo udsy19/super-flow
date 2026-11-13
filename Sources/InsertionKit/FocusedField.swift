@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 
+#if !APP_STORE
 /// Accessibility reads with a short messaging timeout, so a hung app costs at most a quarter of a second.
 @MainActor
 enum AX {
@@ -82,6 +83,25 @@ struct FocusedField {
         return FieldRules.didInsert(text, before: before, selection: selection, after: value)
     }
 }
+#else
+/// The Store edition never inspects or writes other apps through Accessibility (sandboxed apps can't, and the app asks
+/// for Accessibility only to post ⌘V; docs/app-store/privacy-and-permissions.md). No AXUIElement code is compiled in:
+/// there is never a focused field, so callers fall back to pasting and to Secure Event Input for password fields.
+@MainActor
+struct FocusedField {
+    let role: String? = nil
+    let isSecure = false
+    let isEditable = false
+
+    static func current() -> FocusedField? { nil }
+
+    var value: String? { nil }
+    var selectedRange: NSRange? { nil }
+    var selectedText: String? { nil }
+    func isSame(as other: FocusedField) -> Bool { false }
+    func insert(_ text: String) -> Bool { false }
+}
+#endif
 
 /// The rules about the focused element, as pure logic.
 public enum FieldRules {
