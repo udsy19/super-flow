@@ -1,4 +1,4 @@
-#if APP_STORE
+#if APP_STORE && SANDBOX_PROBE
 import AppKit
 import ApplicationServices
 import AVFoundation
@@ -6,6 +6,8 @@ import CoreAudio
 import EventKit
 import SuperFlowCore
 
+/// Compiled only into probe builds (`PROBE=1 DISTRIBUTION=appstore ./scripts/build-app.sh`, which adds -DSANDBOX_PROBE and
+/// writes build/appstore-probe/); never into the release Store binary (build-app.sh checks with nm).
 /// `--sandbox-probe`: a headless run of the Store edition's sandbox-sensitive paths through the real services, for the
 /// App Store test bed (docs/app-store/test-results.md). It never shows UI of its own, writes one JSON report to the
 /// container's temporary folder (`sandbox-probe.json`) and quits. Prompts it triggers (Microphone, Accessibility,
@@ -117,10 +119,12 @@ enum SandboxProbe {
             try fm.createDirectory(at: fixture.appendingPathComponent("Audio/Dictations"), withIntermediateDirectories: true)
             try Data("fixture".utf8).write(to: fixture.appendingPathComponent("store.sqlite"))
             try Data().write(to: fixture.appendingPathComponent("Audio/Dictations/a.caf"))
-            try DataImport.stage(from: fixture)
-            record("import.stage", DataImport.hasPending && fm.fileExists(atPath: fixture.path), "staged at \(DataImport.staging.path); source kept")
-            // Undo: the probe must not replace the data of a real run.
-            try fm.removeItem(at: DataImport.staging)
+            // Its own staging folder: a real import the user staged is never touched.
+            let staging = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("probe-import-staging", isDirectory: true)
+            try DataImport.stage(from: fixture, to: staging)
+            record("import.stage", fm.fileExists(atPath: staging.appendingPathComponent("store.sqlite").path) && fm.fileExists(atPath: fixture.path),
+                   "staged at \(staging.path); source kept")
+            try fm.removeItem(at: staging)
         } catch {
             record("import.stage", false, error.localizedDescription)
         }

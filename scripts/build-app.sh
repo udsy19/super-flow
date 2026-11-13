@@ -16,7 +16,9 @@ DISTRIBUTION="${DISTRIBUTION:-direct}"
 STORE_BUNDLE_ID="com.udsy.superflow.appstore"
 case "$DISTRIBUTION" in
   direct) SWIFT_FLAGS=(); OUT="$ROOT/build"; ENT="$ROOT/Resources/SuperFlow.entitlements" ;;
-  appstore) SWIFT_FLAGS=(-Xswiftc -DAPP_STORE); OUT="$ROOT/build/appstore"; ENT="$ROOT/Resources/SuperFlow-AppStore.entitlements" ;;
+  appstore) SWIFT_FLAGS=(-Xswiftc -DAPP_STORE); OUT="$ROOT/build/appstore"; ENT="$ROOT/Resources/SuperFlow-AppStore.entitlements"
+    # PROBE=1: a test-bed build with the headless sandbox probe (-DSANDBOX_PROBE), kept apart from the release bundle.
+    if [ "${PROBE:-0}" = 1 ]; then SWIFT_FLAGS+=(-Xswiftc -DSANDBOX_PROBE); OUT="$ROOT/build/appstore-probe"; fi ;;
   *) echo "DISTRIBUTION must be direct or appstore (got $DISTRIBUTION)" >&2; exit 1 ;;
 esac
 # bash 3.2 + set -u: an empty array expands only through this guard.
@@ -44,6 +46,8 @@ if [ "$DISTRIBUTION" = appstore ]; then
   # Own bundle id (both editions can be installed side by side), and no Apple Events: the Store edition sends none.
   /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $STORE_BUNDLE_ID" "$APP/Contents/Info.plist"
   /usr/libexec/PlistBuddy -c "Delete :NSAppleEventsUsageDescription" "$APP/Contents/Info.plist"
+  # Accessibility is asked for only to post ⌘V (and Return/Tab after it); nothing of other apps is read.
+  /usr/libexec/PlistBuddy -c "Set :NSAccessibilityUsageDescription Super Flow uses Accessibility only to paste your dictated text into the app you are typing in, by sending the paste shortcut (⌘V) when you finish speaking, and to copy text you have selected (⌘C) when you ask it to rewrite that text. It never reads the content of other apps." "$APP/Contents/Info.plist"
 fi
 # Cue sounds (scripts/make-sounds.swift) and the bundled models (the Silero VAD, so VAD never downloads).
 cp -R "$ROOT/Resources/Sounds" "$APP/Contents/Resources/Sounds"
@@ -119,6 +123,9 @@ if [ "$DISTRIBUTION" = appstore ]; then
   done
   [ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$APP/Contents/Info.plist")" = "$STORE_BUNDLE_ID" ] || fail "bundle id is not $STORE_BUNDLE_ID"
   if strings -a "$EXE" | grep -q 'api.github.com/repos/.*/releases'; then fail "the Store edition still contains the GitHub updater"; fi
+  # No Accessibility inspection of other apps in the Store binary (docs/app-store/privacy-and-permissions.md).
+  if nm -u "$EXE" | grep -q '_AXUIElement'; then fail "the Store edition still links AXUIElement APIs: $(nm -u "$EXE" | grep _AXUIElement | tr '\n' ' ')"; fi
+  if [ "${PROBE:-0}" != 1 ] && nm "$EXE" | grep -q 'SandboxProbe'; then fail "the release Store binary contains the sandbox probe"; fi
 else
   # Embedded frameworks are signed without an Apple Team ID, so the hardened runtime refuses to load them unless library
   # validation is off. Without this the app aborts at launch; fail the build instead.

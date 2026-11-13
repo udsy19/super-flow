@@ -33,7 +33,7 @@ if [ "${ADHOC:-0}" != 1 ]; then
   done
 fi
 
-DISTRIBUTION=appstore ./scripts/build-app.sh
+PROBE=0 DISTRIBUTION=appstore ./scripts/build-app.sh
 [ "${ADHOC:-0}" = 1 ] && { echo "Ad-hoc sandboxed app: $APP"; exit 0; }
 
 # Store signing. The profile supplies the application identifier and team; they join the sandbox entitlements.
