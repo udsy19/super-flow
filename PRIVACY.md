@@ -59,3 +59,16 @@ Mac.
 | Input Monitoring | Seeing the Fn key and shortcuts when Accessibility is not granted. |
 | System Audio Recording (macOS 14.4+) or Screen Recording (earlier) | Capturing the other participants of a meeting, only while the Notetaker records. |
 | Calendars (optional) | Meeting titles, attendees and reminders. Read-only. |
+
+## Mac App Store edition
+
+Super Flow from the Mac App Store (`com.udsy.superflow.appstore`) follows everything above, with these differences:
+
+- **Data collected by the developer: none.** No account, no analytics, no telemetry, no servers. Audio, transcripts, notes and meetings stay on your Mac.
+- **Network use:** only model downloads from `huggingface.co`, each after you agree, verified against a SHA-256 before use. There is no update check; the App Store updates the app.
+- **Not read in this edition:** the text around the cursor, the field's style, and your corrections after inserting. The sandbox does not allow reading other apps' text, so these features show "Not in this edition".
+- **Inserting text is copy-only by default.** Typing ⌘V (and Return/Tab after inserting) is opt-in under **Settings → System → Paste automatically** and needs the macOS Accessibility (post events) permission, requested only when you turn it on.
+- **Permissions:** Microphone (dictation and your side of a meeting); System audio recording (the other side of a meeting); Input Monitoring (the Fn / shortcut push-to-talk key); Calendars (meeting titles and attendees); Screen Recording, optional, only to read browser window titles for meeting detection — nothing is captured. Each is requested when you first use the feature.
+- **Recording:** dictation records only while the key is held or hands-free is on, with the Flow Bar visible; a detected meeting always asks before recording, and the Flow Bar and macOS indicators show while it records.
+- **Where data lives:** inside the app's sandbox container, `~/Library/Containers/com.udsy.superflow.appstore/`. Importing from the direct download is a copy you start; nothing is moved or deleted.
+- **Removing everything:** delete the app, then the container folder above.
