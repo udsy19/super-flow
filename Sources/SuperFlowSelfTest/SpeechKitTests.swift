@@ -20,8 +20,13 @@ func registerSpeechKitTests() {
     SelfTest.cases.append(("SpeechKit.autoDownloadGate", { speechGate() }))
     SelfTest.cases.append(("SpeechKit.downloads", { MainActor.assumeIsolated { speechDownloads() } }))
     SelfTest.cases.append(("SpeechKit.pauseAndResume", { MainActor.assumeIsolated { speechPauseResume() } }))
+    #if APP_STORE
+    // Store edition: no mirror, and only pinned Core ML files (the direct cases below exercise the mirror with unpinned sets).
+    SelfTest.cases.append(("SpeechKit.storeFixedOriginAndPins", { MainActor.assumeIsolated { speechStoreOriginAndPins() } }))
+    #else
     SelfTest.cases.append(("SpeechKit.folderDownloadViaMirror", { MainActor.assumeIsolated { speechFolderDownload() } }))
     SelfTest.cases.append(("SpeechKit.subfolderDownload", { MainActor.assumeIsolated { speechSubfolderDownload() } }))
+    #endif
     SelfTest.cases.append(("SpeechKit.automaticQueue", { MainActor.assumeIsolated { speechAutomaticQueue() } }))
     SelfTest.cases.append(("SpeechKit.importAndDelete", { MainActor.assumeIsolated { speechImportDelete() } }))
     SelfTest.cases.append(("SpeechKit.sileroVAD", { MainActor.assumeIsolated { speechSilero() } }))
@@ -95,7 +100,12 @@ final class MockModelServer: URLProtocol, @unchecked Sendable {
         return configuration
     }
 
-    override class func canInit(with request: URLRequest) -> Bool { request.url?.host?.hasSuffix(".test") == true }
+    /// `.test` hosts, and Hugging Face itself, so no self-test ever reaches the real network (the Store edition always
+    /// downloads from huggingface.co); an unserved URL answers 404.
+    override class func canInit(with request: URLRequest) -> Bool {
+        guard let host = request.url?.host else { return false }
+        return host.hasSuffix(".test") || host == "huggingface.co"
+    }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
@@ -450,7 +460,36 @@ private func speechGate() {
           && other.state(of: model.id) == .installed, "a nested set imports")
 }
 
+#if APP_STORE
+/// The mirror setting is ignored (the listing is asked of huggingface.co), and a set whose files aren't pinned in the app
+/// is refused before anything is fetched.
+@MainActor private func speechStoreOriginAndPins() {
+    Defaults[.modelMirrorURL] = "https://mirror.test/"
+    defer { Defaults.reset(.modelMirrorURL) }
+    let model = ModelDescriptor(id: "test-unpinned", kind: .diarization, name: "Unpinned", engine: "fluidaudio", bytes: 1_000,
+                                repository: "acme/diar-coreml", revision: "main", licence: "CC-BY-4.0")
+    let api = "https://huggingface.co/api/models/acme/diar-coreml/tree/main?recursive=true"
+    let entries: [[String: Any]] = ModelLayout(model, root: SuperFlowPaths.models).requiredEntries.map { entry in
+        ["type": "file", "path": entry.hasSuffix(".mlmodelc") ? entry + "/model.mil" : entry, "size": 2, "oid": Data("{}".utf8).gitBlobSHA1]
+    }
+    MockModelServer.serve(api, .init(data: try! JSONSerialization.data(withJSONObject: entries)))
+    let (manager, _) = testManager([model])
+    let result = drain(manager.download(model.id))
+    check(MockModelServer.ranges(for: api).count == 1, "the listing came from huggingface.co, not the mirror")
+    check(!MockModelServer.requests.contains { $0.url.contains("mirror.test") }, "the mirror was never asked")
+    check((result.error as? ModelError) == .checksumMismatch && manager.state(of: model.id) != .installed,
+          "an unpinned set is refused (\(String(describing: result.error)))")
+    check(PinnedModelFiles.digests.keys.sorted() == ModelCatalog.all.filter { $0.repository != nil }.map(\.id).sorted(),
+          "every catalog Core ML set has pinned files")
+}
+#endif
+
 @MainActor private func speechAutomaticQueue() {
+    #if APP_STORE
+    check(!Defaults[.autoDownloadModels], "Store: automatic downloads start off, until the user agrees")
+    #endif
+    Defaults[.autoDownloadModels] = true   // the user's consent (the direct edition's default)
+    defer { Defaults.reset(.autoDownloadModels) }
     let slowData = pattern(300_000, seed: 21), fastData = pattern(20_000, seed: 22), lateData = pattern(30_000, seed: 23)
     let slow = testModel("auto-slow", data: slowData), fast = testModel("auto-fast", data: fastData), late = testModel("auto-late", data: lateData)
     MockModelServer.serve(slow.url!.absoluteString, .init(data: slowData, chunk: 16 << 10, delay: 0.03))
@@ -504,7 +543,7 @@ private func speechGate() {
     Defaults[.autoDownloadModels] = false
     gated.set { $0.freeBytes = 100 << 30 }
     check(queue.autoDownloadStatus == .disabled, "the setting turns the queue off")
-    Defaults.reset(.autoDownloadModels)
+    Defaults[.autoDownloadModels] = true
     check(waitUntil { queue.autoDownloadStatus == .upToDate } && queue.state(of: pending.id) == .installed, "and back on, it runs")
 }
 
@@ -531,8 +570,17 @@ private func speechGate() {
         if entry.hasSuffix(".mlmodelc") { try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true) }
         else { try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true); try? Data("{}".utf8).write(to: url) }
     }
+    #if APP_STORE
+    // Store: a set is accepted only when every file matches its pinned hash; these placeholders don't.
+    if case .failure(let error)? = complete(60, { try await manager.importModel(ModelCatalog.diarization.id, from: folder) }) {
+        check((error as? ModelError) == .checksumMismatch, "Store: an unverified folder set is refused")
+    } else { check(false, "Store: importing an unverified folder set must fail") }
+    check(manager.state(of: ModelCatalog.diarization.id) != .installed, "Store: nothing installed from it")
+    check(ModelManager.removeUnverifiedModels(root: root).isEmpty, "Store: nothing unverified left installed")
+    #else
     if case .success? = complete(60, { try await manager.importModel(ModelCatalog.diarization.id, from: folder) }) {} else { check(false, "folder import") }
     check(manager.state(of: ModelCatalog.diarization.id) == .installed, "folder set imported")
+    #endif
     check((try? manager.delete(model.id)) != nil && manager.state(of: model.id) == .notDownloaded && manager.location(of: model.id) == nil,
           "delete removes the file")
     check((try? manager.delete("nope")) == nil, "deleting an unknown id throws")
@@ -909,6 +957,9 @@ private func speechFreeBytesMissingFolder() {
         .appendingPathComponent("models-missing-\(UUID().uuidString)/Application Support/Models", isDirectory: true)
     let free = DownloadConditions.freeBytes(at: missing)
     check(!FileManager.default.fileExists(atPath: missing.path), "the models folder does not exist yet")
-    check((free ?? 0) > 0 && free == DownloadConditions.freeBytes(at: FileManager.default.temporaryDirectory),
-          "free space is read at the nearest existing folder, not 0, before the models folder exists")
+    // Two reads of a live volume differ by whatever was written in between (a few KB when anything else runs), so
+    // they only have to agree to within 256 MB; the bug this guards against read 0.
+    let reference = DownloadConditions.freeBytes(at: FileManager.default.temporaryDirectory) ?? 0
+    check((free ?? 0) > 0 && abs((free ?? 0) - reference) < 256 << 20,
+          "free space is read at the nearest existing folder, not 0, before the models folder exists (\(free ?? -1) vs \(reference))")
 }
