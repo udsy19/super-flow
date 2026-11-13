@@ -54,7 +54,7 @@
       "name": "Text insertion (CGEvent Cmd-V paste)",
       "classification": "unverified-needs-experiment",
       "storeStatus": "needs manual Accessibility grant; 2.4.5 review risk; copy-only fallback added",
-      "evidence": "docs/app-store/test-results.md: CGPreflightPostEventAccess=false; prompt agent sandbox-denied"
+      "evidence": "docs/app-store/test-results.md: CGPreflightPostEventAccess=false; prompt agent sandbox-denied; Store NSAccessibilityUsageDescription states \u2318V/\u2318C posting only"
     },
     {
       "name": "Copy-only insertion fallback",
@@ -63,10 +63,10 @@
       "evidence": "Sources/InsertionKit/TextInserter.swift"
     },
     {
-      "name": "AX context / AX value insertion / secure-field via AX",
+      "name": "AX inspection/writing of other apps (cursor context, AX value insertion, AX secure-field detection)",
       "classification": "incompatible-confirmed",
-      "storeStatus": "gated (degrades to no context)",
-      "evidence": "docs/app-store/privacy-and-permissions.md"
+      "storeStatus": "compiled out of the Store binary (#if !APP_STORE); Context awareness setting hidden; insertionMethod=.accessibility does not exist in Store",
+      "evidence": "build-app.sh fails if `nm -u` shows any _AXUIElement symbol; Sources/InsertionKit/FocusedField.swift, ContextReader.swift"
     },
     {
       "name": "Meeting detection (native apps via Core Audio process objects)",
@@ -77,8 +77,8 @@
     {
       "name": "Meeting detection (browser tabs via AX window titles)",
       "classification": "incompatible-confirmed",
-      "storeStatus": "not available in Store",
-      "evidence": "docs/app-store/architecture.md"
+      "storeStatus": "compiled out of Store (window titles via AX)",
+      "evidence": "Sources/MeetingKit/MeetingEnvironment.swift windowTitles returns [] under APP_STORE"
     },
     {
       "name": "Calendar (EventKit)",

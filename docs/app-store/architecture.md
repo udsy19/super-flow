@@ -19,17 +19,20 @@
 | Permission buttons (Accessibility, Input Monitoring) | prompt first, Settings on 2nd click | prompt, and open System Settings at once when not granted (the prompt agent is sandbox-denied, see test-results.md) |
 | Data import | – | Settings › System › "Import from Super Flow (direct download)" |
 | Apple Events | entitlement present but unused | removed |
-| Diagnostics | – | `--sandbox-probe [--probe-models]` headless probe (Sources/SuperFlow/SandboxProbe.swift, Store only) |
+| Diagnostics | – | `--sandbox-probe [--probe-models]` headless probe, compiled only with `-DSANDBOX_PROBE` (`PROBE=1`, build/appstore-probe); build-app.sh fails if a release Store binary contains it |
+| AX inspection of other apps (focused field, cursor context, window titles, AX value insertion) | on | **compiled out**; `InsertionMethod.accessibility` doesn't exist; Context awareness hidden; build fails on any `_AXUIElement` import |
 
 ## Data import
 `SuperFlowCore.DataImport`: the user picks the direct edition's folder in an NSOpenPanel pre-pointed at the real
 `~/Library/Application Support/Super Flow` (resolved via `getpwuid`, since `NSHomeDirectory()` is the container). It is copied
 (never moved) to `<container>/Library/Application Support/Super Flow (import)`; optionally the direct edition's preferences plist is
-picked and its keys copied into the Store defaults. The app quits; on next launch, before the database opens, the staged folder
+picked and its keys copied into the Store defaults, except `DataImport.storeOwnedKeys` (download consent, insertion method,
+mirror, context awareness, updater state). After the swap, every imported model is re-hashed against the pinned hashes and
+removed if it doesn't match (`ModelManager.removeUnverifiedModels`). The app quits; on next launch, before the database opens, the staged folder
 replaces the Store data, and the previous Store data is kept as `Super Flow (before import <date>)`. No container-migration.plist.
 
 ## Meeting detection without Apple Events
 Detection never used Apple Events: it reads Core Audio process objects (`kAudioHardwarePropertyProcessObjectList`,
 `kAudioProcessPropertyIsRunningInput`) to see which conferencing app holds the microphone, `NSRunningApplication`, browser window
-titles through AX (direct only in practice: unavailable sandboxed, so browser-based meetings are not auto-detected in the Store
-edition; native apps are), and EventKit. The probe confirmed Core Audio process objects are readable in the sandbox.
+titles through AX (direct only: compiled out of the Store edition, so browser-based meetings are not auto-detected there;
+native apps are), and EventKit. The probe confirmed Core Audio process objects are readable in the sandbox.

@@ -9,7 +9,9 @@ Pending a human: paste and Fn hotkey after manually granting Accessibility / Inp
 ```bash
 # Store edition, ad-hoc signed and sandboxed, for local testing
 ADHOC=1 ./scripts/package-appstore.sh                 # → build/appstore/Super Flow.app
-open -n -W "build/appstore/Super Flow.app" --args --sandbox-probe [--probe-models]
+# Probe test bed (never the release binary): -DSANDBOX_PROBE, written to build/appstore-probe/
+PROBE=1 DISTRIBUTION=appstore ./scripts/build-app.sh
+open -n -W "build/appstore-probe/Super Flow.app" --args --sandbox-probe [--probe-models]
 cat ~/Library/Containers/com.udsy.superflow.appstore/Data/tmp/sandbox-probe.json
 /usr/bin/log show --last 10m --predicate 'sender == "Sandbox"' | grep 'SuperFlow('
 

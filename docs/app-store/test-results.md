@@ -1,6 +1,6 @@
 # Test results — 2026-11-12, macOS 26.5.1 arm64, Command Line Tools only (no Xcode), no signing identities
 
-All runs use the real app binary: `DISTRIBUTION=appstore ./scripts/build-app.sh` → `build/appstore/Super Flow.app`
+Runs 1–2 used the Store binary as first built (probe then compiled into it; since moved behind `-DSANDBOX_PROBE`, see review fixes below): `DISTRIBUTION=appstore ./scripts/build-app.sh` → `build/appstore/Super Flow.app`
 (ad-hoc signed, App Sandbox entitlement enforced; `libsystem_secinit … AppSandbox` in the log), launched with
 `open -n -W "build/appstore/Super Flow.app" --args --sandbox-probe [--probe-models]`. The probe
 (`Sources/SuperFlow/SandboxProbe.swift`) calls the production services and writes
@@ -64,3 +64,26 @@ None was run: no osascript/System Events, no CGEvent posting, no typing into pan
 6. FaceTime/Zoom call → meeting prompt → Record → verify the "Them" track has audio (process tap after the System Audio grant).
 7. Settings › System › Import… → pick `~/Library/Application Support/Super Flow` → (optional) `~/Library/Preferences/com.udsy.superflow.plist` → app quits → reopen → history present; direct folder untouched.
 8. Remove `com.apple.security.device.microphone` (or `audio-input`) and repeat step 2 to learn which key the sandbox checks.
+
+## Review fixes (2026-11-12, later): self-tests and binary checks
+Toolchain: `export DEVELOPER_DIR=/Library/Developer/CommandLineTools` (Xcode 26.6 was installed mid-session, licence not accepted).
+- Store self-tests: `swift build -c release -Xswiftc -DAPP_STORE --scratch-path .build-appstore --product SuperFlowSelfTest`, run under
+  `sandbox-exec -p '(version 1)(allow default)(deny network-outbound (remote ip))'` so any real request would fail → **All self-tests passed**
+  (129 cases). Store-specific cases assert the Store behaviour instead of the direct one: downloads default off (Core.settingsDefaults),
+  mirror ignored + unpinned set refused (SpeechKit.storeFixedOriginAndPins replaces the two mirror cases), unverified folder import refused
+  (SpeechKit.importAndDelete), consent given explicitly before the queue test (SpeechKit.automaticQueue); UpdateKit cases are compiled out.
+  The mock server now also answers huggingface.co, so no case can reach the network. The first Store run without these changes tried
+  real huggingface.co requests from the mirror cases (blocked by sandbox-exec: "Operation not permitted").
+- Direct self-tests: `swift build -c release --product SuperFlowSelfTest && .build/release/SuperFlowSelfTest` → 135 passed, 1 failed:
+  `MeetingKit.recordEndToEnd` track lengths [13.44, 13.4] vs the 0.5 s tolerance (timing under load; untouched by this branch);
+  re-run alone 3/3 passed.
+- Release Store binary: `nm -u … | grep -c _AX` → **0** (no AXUIElement*, not even AXIsProcessTrusted); imports `_CGEventPost`,
+  `_CGPreflightPostEventAccess`, `_CGRequestPostEventAccess` for the paste path. `nm … | grep -c SandboxProbe` → **0**; the
+  `PROBE=1` test-bed build → 80. build-app.sh now fails a Store build on either. Store `NSAccessibilityUsageDescription`: "Super Flow
+  uses Accessibility only to paste your dictated text into the app you are typing in, by sending the paste shortcut (⌘V) when you
+  finish speaking, and to copy text you have selected (⌘C) when you ask it to rewrite that text. It never reads the content of other apps."
+- Direct binary still imports 6 `_AXUIElement*` symbols (unchanged behaviour).
+- `SpeechKit.freeBytesBeforeFolderExists`: the test is identical on `main` (unchanged by this branch until this fix). It compared two
+  reads of the volume's free space for equality; any write in between makes them differ (measured: 46 766 363 136 vs 46 766 359 040).
+  With other work on the disk it failed 15/15 in isolation in both the direct and Store binaries; it passed in the earlier full direct run
+  only because the disk happened to be quiet. So **yes, it fails on main too** under disk activity. Fixed to accept a 256 MB tolerance.
