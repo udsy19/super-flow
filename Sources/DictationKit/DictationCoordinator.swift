@@ -196,6 +196,11 @@ public final class DictationCoordinator: DictationControlling {
             cleanupLoadFailedID = nil
             Task { @MainActor [weak self] in await self?.loadCleanupModel(id) }
         } else {
+            // The Store edition names the download and its size first, as every other download there does (4.2.3).
+            if Distribution.isAppStore, let model = ModelCatalog.descriptor(id),
+               !Alerts.confirm("Download \(model.name)?",
+                               info: "\(ByteCountFormatter.string(fromByteCount: model.bytes, countStyle: .file)) from Hugging Face. It runs on this Mac.",
+                               confirmTitle: "Download") { return }
             let progress = Services.models.download(id)
             Task { do { for try await _ in progress {} } catch { Log.app.error("Cleanup model download: \(error.localizedDescription, privacy: .public)") } }
         }

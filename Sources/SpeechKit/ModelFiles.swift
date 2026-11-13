@@ -69,6 +69,41 @@ public struct ModelLayout: Sendable {
     }
 }
 
+extension ModelLayout {
+    /// Whether the model at `location` (a file, or a Core ML set's folder) is exactly what the catalog pins: the file's
+    /// SHA-256, or every file under the set's required entries against `PinnedModelFiles` (and every entry present).
+    /// The Store edition checks models that arrive other than by download (an import) with this before using them.
+    public func matchesPinnedHashes(at location: URL, fileManager: FileManager = .default) -> Bool {
+        guard isFolder else {
+            guard let sha256 = model.sha256, let size = (try? fileManager.attributesOfItem(atPath: location.path))?[.size] as? Int64 else {
+                return false
+            }
+            var digest = StreamingDigest(.sha256(sha256), size: size)
+            return (try? digest.update(contentsOf: location)) != nil && digest.matches()
+        }
+        guard let pinned = PinnedModelFiles.digests[model.id], !requiredEntries.isEmpty else { return false }
+        var checked = 0
+        for entry in requiredEntries {
+            let base = location.appendingPathComponent(entry)
+            var isDirectory: ObjCBool = false
+            guard fileManager.fileExists(atPath: base.path, isDirectory: &isDirectory) else { return false }
+            let files: [URL] = isDirectory.boolValue
+                ? (fileManager.enumerator(at: base, includingPropertiesForKeys: [.isRegularFileKey])?.compactMap { $0 as? URL }
+                    .filter { (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true } ?? [])
+                : [base]
+            for file in files {
+                let path = String(file.standardizedFileURL.path.dropFirst(location.standardizedFileURL.path.count + 1))
+                guard let expected = pinned[path],
+                      let size = (try? fileManager.attributesOfItem(atPath: file.path))?[.size] as? Int64 else { return false }
+                var digest = StreamingDigest(expected, size: size)
+                guard (try? digest.update(contentsOf: file)) != nil, digest.matches() else { return false }
+                checked += 1
+            }
+        }
+        return checked > 0
+    }
+}
+
 /// One file to fetch, with the hash that proves it.
 public struct RemoteFile: Equatable, Sendable {
     public enum Digest: Equatable, Sendable {

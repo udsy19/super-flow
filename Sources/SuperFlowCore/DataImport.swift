@@ -25,7 +25,7 @@ public enum DataImport {
     public static var hasPending: Bool { FileManager.default.fileExists(atPath: staging.path) }
 
     /// Copies `source` (the folder the user picked) to the staging folder. Throws when it isn't Super Flow data.
-    public static func stage(from source: URL, fileManager: FileManager = .default) throws {
+    public static func stage(from source: URL, to staging: URL = DataImport.staging, fileManager: FileManager = .default) throws {
         guard fileManager.fileExists(atPath: source.appendingPathComponent("store.sqlite").path) else {
             throw Failure.notASuperFlowFolder
         }
@@ -53,6 +53,14 @@ public enum DataImport {
         return kept
     }
 
+    /// Settings the Store edition decides for itself: download consent (and its answer), the insertion method (the
+    /// direct edition's Accessibility write doesn't exist here), the model mirror, and the direct edition's updater state.
+    public static let storeOwnedKeys: Set<String> = [
+        Defaults.Keys.autoDownloadModels.name, Defaults.Keys.modelDownloadConsentAnswered.name, Defaults.Keys.insertionMethod.name,
+        Defaults.Keys.modelMirrorURL.name, Defaults.Keys.useAxContext.name, Defaults.Keys.installUpdates.name,
+        Defaults.Keys.lastUpdateCheck.name, "updateKit.lastAttempt", "updateKit.installedVersion",
+    ]
+
     /// Copies the direct edition's settings (its preferences plist, picked by the user) into this edition's defaults.
     /// Keys owned by the system are skipped. Returns how many settings were imported.
     @discardableResult
@@ -61,7 +69,7 @@ public enum DataImport {
         guard let values = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else { return 0 }
         let skipped = ["NS", "Apple", "com.apple.", "WebKit"]
         var count = 0
-        for (key, value) in values where !skipped.contains(where: key.hasPrefix) {
+        for (key, value) in values where !skipped.contains(where: key.hasPrefix) && !storeOwnedKeys.contains(key) {
             defaults.set(value, forKey: key)
             count += 1
         }

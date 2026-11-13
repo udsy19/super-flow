@@ -23,7 +23,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         #if APP_STORE
         // A data import staged in Settings › System replaces this edition's data before the store opens.
         do {
-            if let kept = try DataImport.finishPending() { Log.app.info("Import finished; previous data kept at \(kept.path, privacy: .public)") }
+            if DataImport.hasPending {
+                let kept = try DataImport.finishPending()
+                Log.app.info("Import finished; previous data kept at \(kept?.path ?? "-", privacy: .public)")
+                // Imported models are used only if they are exactly the pinned ones.
+                let removed = ModelManager.removeUnverifiedModels(root: SuperFlowPaths.models)
+                if !removed.isEmpty { Log.app.info("Removed imported models that don't match their pinned hashes: \(removed, privacy: .public)") }
+            }
         } catch {
             Log.app.error("Import couldn't finish: \(error.localizedDescription, privacy: .public)")
         }
@@ -47,7 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The launch sequence: retention sweeps, automatic model downloads, hotkeys, meeting detection, the Flow Bar,
     /// onboarding until completed, background updates.
     func applicationDidFinishLaunching(_ notification: Notification) {
-        #if APP_STORE
+        #if APP_STORE && SANDBOX_PROBE
         if SandboxProbe.requested { SandboxProbe.run(); return }
         #endif
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"

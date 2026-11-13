@@ -4,8 +4,8 @@ import Foundation
 // checks every downloaded file against a hash compiled into the app instead of one read from the network
 // (docs/app-store/model-and-asset-strategy.md). Regenerate when a catalog revision changes. LFS files carry their
 // SHA-256; small Git files their blob SHA-1. Paths are relative to the set's folder (its `subfolder`, if any).
-enum PinnedModelFiles {
-    static let digests: [String: [String: RemoteFile.Digest]] = [
+public enum PinnedModelFiles {
+    public static let digests: [String: [String: RemoteFile.Digest]] = [
         "parakeet-tdt-0.6b-v3": [
             ".gitattributes": .gitBlobSHA1("a6344aac8c09253b3b630fb776ae94478aa0275b"),
             "Decoder.mlmodelc/analytics/coremldata.bin": .sha256("4238c4e81ecd0dc94bd7dfbb60f7e2cc824107c1ffe0387b8607b72833dba350"),
