@@ -207,8 +207,13 @@ struct PrivacyStep: View {
                                     detail: "Speech recognition, cleanup and meeting summaries run on this Mac.")
                         PrivacyFact(symbol: "person.crop.circle.badge.xmark", title: "No account, no tracking",
                                     detail: "There's nothing to sign in to. No analytics or crash reports are sent.")
-                        PrivacyFact(symbol: "arrow.down.circle", title: "Only two things go online",
-                                    detail: "Model files from Hugging Face, and update checks with GitHub.")
+                        if Distribution.isAppStore {
+                            PrivacyFact(symbol: "arrow.down.circle", title: "Only one thing goes online",
+                                        detail: "Model files from Hugging Face, after you agree to download them.")
+                        } else {
+                            PrivacyFact(symbol: "arrow.down.circle", title: "Only two things go online",
+                                        detail: "Model files from Hugging Face, and update checks with GitHub.")
+                        }
                     }
                 }
                 HStack(alignment: .top, spacing: 12) {
