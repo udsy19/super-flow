@@ -7,6 +7,7 @@ func registerCoreTests() {
     SelfTest.cases.append(("Core.modelCodable", { coreModelCodable() }))
     SelfTest.cases.append(("Core.shortcuts", { coreShortcuts() }))
     SelfTest.cases.append(("Core.settingsDefaults", { coreSettingsDefaults() }))
+    SelfTest.cases.append(("Core.dataImport", { coreDataImport() }))
     SelfTest.cases.append(("Core.retention", { coreRetention() }))
     SelfTest.cases.append(("Core.themeMetrics", { coreThemeMetrics() }))
     SelfTest.cases.append(("Core.appLists", { coreAppLists() }))
@@ -101,9 +102,45 @@ private func coreShortcuts() {
     check(ShortcutMap.noFnKeyboardDefaults.bindings[KeyChord(UInt16(kVK_Control), UInt16(kVK_Space))] == .pushToTalk, "no-Fn alternative")
 }
 
+/// The Store edition's "Import from Super Flow (direct download)": copy, never move; staged until launch; consent and
+/// insertion settings are not imported.
+private func coreDataImport() {
+    let fm = FileManager.default
+    // A base of its own: the swap must not replace the folder the other cases use.
+    let realBase = SuperFlowPaths.base
+    SuperFlowPaths.base = realBase.appendingPathComponent("import-test", isDirectory: true)
+    defer { SuperFlowPaths.base = realBase }
+    let source = SuperFlowPaths.base.appendingPathComponent("direct-\(UUID().uuidString)", isDirectory: true)
+    try? fm.createDirectory(at: source.appendingPathComponent("Audio"), withIntermediateDirectories: true)
+    check((try? DataImport.stage(from: source)) == nil, "a folder without store.sqlite is refused")
+    try? Data("db".utf8).write(to: source.appendingPathComponent("store.sqlite"))
+    let scratch = SuperFlowPaths.base.appendingPathComponent("scratch-staging", isDirectory: true)
+    check((try? DataImport.stage(from: source, to: scratch)) != nil && fm.fileExists(atPath: scratch.appendingPathComponent("store.sqlite").path)
+          && !DataImport.hasPending, "staging to another folder leaves the real staging alone")
+    try? Data("old".utf8).write(to: SuperFlowPaths.support.appendingPathComponent("marker"))
+    check((try? DataImport.stage(from: source)) != nil && DataImport.hasPending && fm.fileExists(atPath: source.path), "staged; the source stays")
+    let kept = try? DataImport.finishPending()
+    check(!DataImport.hasPending && fm.fileExists(atPath: SuperFlowPaths.support.appendingPathComponent("store.sqlite").path)
+          && kept.flatMap { $0 }.map { fm.fileExists(atPath: $0.appendingPathComponent("marker").path) } == true,
+          "swapped in at launch; the previous data is kept beside it")
+    let plist = SuperFlowPaths.base.appendingPathComponent("prefs.plist")
+    let values: [String: Any] = ["autoDownloadModels": true, "insertionMethod": "\"accessibility\"", "enableSounds": false,
+                                 "NSWindow Frame x": "1", "modelDownloadConsentAnswered": true]
+    try? PropertyListSerialization.data(fromPropertyList: values, format: .binary, options: 0).write(to: plist)
+    let suite = UserDefaults(suiteName: "superflow-import-\(UUID().uuidString)")!
+    check((try? DataImport.importSettings(from: plist, into: suite)) == 1 && suite.object(forKey: "enableSounds") as? Bool == false
+          && suite.object(forKey: "autoDownloadModels") == nil && suite.object(forKey: "insertionMethod") == nil
+          && suite.object(forKey: "modelDownloadConsentAnswered") == nil, "settings import skips consent, insertion and system keys")
+}
+
 private func coreSettingsDefaults() {
     check(Defaults[.shortcuts] == .macDefaults, "shortcuts default")
+    #if APP_STORE
+    check(Defaults[.openAtLogin] && !Defaults[.autoDownloadModels] && !Defaults[.modelDownloadConsentAnswered],
+          "Store: launch at login on; model downloads off until the user agrees")
+    #else
     check(Defaults[.openAtLogin] && Defaults[.installUpdates] && Defaults[.autoDownloadModels], "launch at login, updates and model downloads on")
+    #endif
     check(Defaults[.hideFlowBarPermanently] == false && Defaults[.flowBarEdge] == .bottom, "Flow Bar visible at the bottom")
     check(Defaults[.hideAppInDock] == false, "Dock app")
     check(Defaults[.enableSounds] && !Defaults[.shouldMuteAudio] && !Defaults[.shouldPauseAudio], "sound defaults")

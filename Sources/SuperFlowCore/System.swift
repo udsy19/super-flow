@@ -87,6 +87,25 @@ public extension NSScreen {
     static func with(displayID: CGDirectDisplayID) -> NSScreen? { screens.first { $0.displayID == displayID } }
 }
 
+/// Which edition this build is (docs/app-store/architecture.md): the direct download, or the Mac App Store edition
+/// compiled with `-DAPP_STORE` (sandboxed, updated by the Store, models downloaded only after the user agrees).
+public enum Distribution {
+    #if APP_STORE
+    public static let isAppStore = true
+    #else
+    public static let isAppStore = false
+    #endif
+
+    /// The direct edition's data folder in the user's real home (`~/Library/Application Support/Super Flow`), which the
+    /// Store edition offers to import from. Inside the sandbox the home directory APIs point into the container, so the
+    /// real home comes from the password database.
+    public static var directEditionSupport: URL {
+        let home = getpwuid(getuid()).flatMap { $0.pointee.pw_dir.map { String(cString: $0) } } ?? NSHomeDirectory()
+        return URL(fileURLWithPath: home, isDirectory: true)
+            .appendingPathComponent("Library/Application Support/\(SuperFlowPaths.supportFolderName)", isDirectory: true)
+    }
+}
+
 /// Privacy permissions Super Flow checks (behaviour.md §15).
 public enum Permissions {
     /// Privacy & Security panes in System Settings.
@@ -99,12 +118,24 @@ public enum Permissions {
         case audioCapture = "Privacy_AudioCapture"
     }
 
-    /// Whether Super Flow may read the focused text field and post keyboard events.
-    public static var isAccessibilityTrusted: Bool { AXIsProcessTrusted() }
+    /// Whether Super Flow may post keyboard events (and, in the direct edition, read the focused text field). The
+    /// sandboxed Store edition can't inspect other apps through Accessibility; it asks only to post events, which is
+    /// what pasting needs (docs/app-store/privacy-and-permissions.md).
+    public static var isAccessibilityTrusted: Bool {
+        #if APP_STORE
+        CGPreflightPostEventAccess()
+        #else
+        AXIsProcessTrusted()
+        #endif
+    }
 
     /// Shows the system Accessibility prompt when not yet trusted; returns the current trust.
     @discardableResult public static func requestAccessibility() -> Bool {
+        #if APP_STORE
+        CGRequestPostEventAccess()
+        #else
         AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
+        #endif
     }
 
     public static var microphone: AVAuthorizationStatus { AVCaptureDevice.authorizationStatus(for: .audio) }

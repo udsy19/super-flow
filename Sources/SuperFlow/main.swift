@@ -8,7 +8,9 @@ import InsertionKit
 import FlowBarKit
 import HubKit
 import MeetingKit
+#if !APP_STORE
 import UpdateKit
+#endif
 import DictationKit
 
 /// The app shell (behaviour.md §1, owner decisions): a regular Dock app with the hub window and the floating Flow
@@ -18,6 +20,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Installs the modules in dependency order (behaviour.md §22.2): the store first, then models and engines, the
     /// text pipeline, insertion and hotkeys, meetings, the Flow Bar, the hub, updates, and the coordinator over them.
     func applicationWillFinishLaunching(_ notification: Notification) {
+        #if APP_STORE
+        // A data import staged in Settings › System replaces this edition's data before the store opens.
+        do {
+            if DataImport.hasPending {
+                let kept = try DataImport.finishPending()
+                Log.app.info("Import finished; previous data kept at \(kept?.path ?? "-", privacy: .public)")
+                // Imported models are used only if they are exactly the pinned ones.
+                let removed = ModelManager.removeUnverifiedModels(root: SuperFlowPaths.models)
+                if !removed.isEmpty { Log.app.info("Removed imported models that don't match their pinned hashes: \(removed, privacy: .public)") }
+            }
+        } catch {
+            Log.app.error("Import couldn't finish: \(error.localizedDescription, privacy: .public)")
+        }
+        #endif
         FlowStoreModule.install()
         SpeechKitModule.install()
         AudioKitModule.install()
@@ -26,7 +42,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MeetingKitModule.install()
         FlowBarKitModule.install()
         HubKitModule.install()
+        #if !APP_STORE
         UpdateKitModule.install()
+        #endif
         DictationKitModule.install()
         NSApp.mainMenu = MainMenu.make()
         NSApp.setActivationPolicy(Defaults[.hideAppInDock] ? .accessory : .regular)
@@ -35,6 +53,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The launch sequence: retention sweeps, automatic model downloads, hotkeys, meeting detection, the Flow Bar,
     /// onboarding until completed, background updates.
     func applicationDidFinishLaunching(_ notification: Notification) {
+        #if APP_STORE && SANDBOX_PROBE
+        if SandboxProbe.requested { SandboxProbe.run(); return }
+        #endif
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
         Log.app.info("Super Flow \(version, privacy: .public) launched")
         runRetention()
@@ -47,7 +68,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The store had to be rebuilt from a damaged file, or runs in memory this session: say so once.
         if let notice = (Services.history as? SQLiteStore)?.openingNotice { Services.flowBar.show(notice) { _ in } }
         if !Services.onboarding.isCompleted { Services.onboarding.show() } else { Services.hub.show(.home) }
+        #if !APP_STORE
         Services.updates.start()
+        #endif
     }
 
     /// Dictation history under the local data policy, dictation audio past 14 days, meeting audio past the retention

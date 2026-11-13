@@ -34,6 +34,9 @@ enum MainMenu {
         dictation.addItem(withTitle: "Start Dictation", action: #selector(Target.startDictation), keyEquivalent: "").target = Target.shared
         dictation.addItem(withTitle: "Paste Last Transcript", action: #selector(Target.pasteLast), keyEquivalent: "").target = Target.shared
         dictation.addItem(withTitle: "Copy Last Transcript", action: #selector(Target.copyLast), keyEquivalent: "").target = Target.shared
+        dictation.addItem(.separator())
+        // A way into the Notetaker that needs no global shortcut (Input Monitoring), e.g. for App Review.
+        dictation.addItem(withTitle: "Start Notetaker", action: #selector(Target.startNotetaker), keyEquivalent: "").target = Target.shared
         menu.addItem(submenu(dictation))
 
         let window = NSMenu(title: "Window")
@@ -61,6 +64,15 @@ enum MainMenu {
         @objc func startDictation() { Services.dictation.start(mode: .handsFree, source: .keyboard) }
         @objc func pasteLast() { Services.dictation.pasteLastTranscript() }
         @objc func copyLast() { Services.dictation.copyLastTranscript() }
+        @objc func startNotetaker() {
+            switch Services.meetingRecorder.state {
+            case .idle, .processing: break
+            case .starting, .recording, .stopping: return
+            }
+            Task { @MainActor in
+                do { try await Services.meetingRecorder.start(nil) } catch { Alerts.error("Couldn't start the Notetaker.", error) }
+            }
+        }
         @objc func openHelp() { NSWorkspace.shared.open(URL(string: "https://github.com/udsy19/super-flow#readme")!) }
         @objc func reportIssue() { NSWorkspace.shared.open(URL(string: "https://github.com/udsy19/super-flow/issues")!) }
     }

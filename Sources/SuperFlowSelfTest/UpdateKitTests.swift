@@ -1,3 +1,4 @@
+#if !APP_STORE // UpdateKit is compiled out of the Store edition.
 import Foundation
 import CryptoKit
 import Security
@@ -309,3 +310,4 @@ private func updateFailedSwap() {
     check(!fm.fileExists(atPath: staged.path), "and the update is dropped")
     try? fm.removeItem(at: work)
 }
+#endif

@@ -33,11 +33,16 @@ final class TextInserter: TextInserting {
     func insert(_ text: String, actions: [PostInsertAction], method: InsertionMethod) async -> InsertionOutcome {
         let field = FocusedField.current()
         if field?.isSecure == true || SecureInput.isHeldByFrontmostApp { return .blockedSecureField }
-        guard AXIsProcessTrusted() else {
+        if method == .copyOnly {
+            if !text.isEmpty { copyToClipboard(text) }
+            return .notInserted(reason: "copy_only")
+        }
+        // Posting ⌘V needs Accessibility (the Store edition asks for it through CGRequestPostEventAccess).
+        guard Permissions.isAccessibilityTrusted else {
             if !text.isEmpty { copyToClipboard(text) }
             return .notInserted(reason: "accessibility_not_trusted")
         }
-        if !text.isEmpty, !(method == .accessibility && field?.insert(text) == true),
+        if !text.isEmpty, !(Self.writesThroughAccessibility(method) && field?.insert(text) == true),
            let reason = await paste(text, fallback: method == .paste ? field : nil) {
             return .notInserted(reason: reason)
         }
@@ -49,7 +54,7 @@ final class TextInserter: TextInserting {
     }
 
     func selectedText() async -> String? {
-        guard AXIsProcessTrusted(), !SecureInput.isHeldByFrontmostApp else { return nil }
+        guard Permissions.isAccessibilityTrusted, !SecureInput.isHeldByFrontmostApp else { return nil }
         let field = FocusedField.current()
         if field?.isSecure == true { return nil }
         if let text = field?.selectedText, !text.isEmpty { return text }
@@ -131,6 +136,14 @@ final class TextInserter: TextInserting {
         let text = pasteboard.string(forType: .string)
         saved.restore(to: pasteboard)
         return text?.isEmpty == false ? text : nil
+    }
+
+    private static func writesThroughAccessibility(_ method: InsertionMethod) -> Bool {
+        #if APP_STORE
+        false
+        #else
+        method == .accessibility
+        #endif
     }
 
     private static func sleep(_ seconds: TimeInterval) async {

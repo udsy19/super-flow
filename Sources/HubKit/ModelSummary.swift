@@ -52,6 +52,17 @@ public struct ModelSummary: Equatable, Sendable {
         AutoDownloadPolicy.order(for: ModelCatalog.preset(isAppleSilicon: Machine.isAppleSilicon, memoryBytes: Machine.memoryBytes))
     }
 
+    /// Bytes this Mac's preset still has to download: the size the Store edition discloses before asking (guideline 4.2.3).
+    @MainActor static func pendingBytes() -> Int64 {
+        guard let models = Services.models else { return 0 }
+        return queue.filter { $0.kind != .vad && models.state(of: $0.id) != .installed }.reduce(0) { $0 + $1.bytes }
+    }
+
+    /// The Store edition asks before its first model download (downloads start off there); true while that question is open.
+    @MainActor static var needsDownloadConsent: Bool {
+        Distribution.isAppStore && !Defaults[.autoDownloadModels] && !Defaults[.modelDownloadConsentAnswered] && pendingBytes() > 0
+    }
+
     @MainActor static func current() -> ModelSummary? {
         guard let models = Services.models else { return nil }
         return make(queue: queue, state: models.state(of:), status: models.autoDownloadStatus)

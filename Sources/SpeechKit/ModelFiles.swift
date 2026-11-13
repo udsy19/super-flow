@@ -69,6 +69,41 @@ public struct ModelLayout: Sendable {
     }
 }
 
+extension ModelLayout {
+    /// Whether the model at `location` (a file, or a Core ML set's folder) is exactly what the catalog pins: the file's
+    /// SHA-256, or every file under the set's required entries against `PinnedModelFiles` (and every entry present).
+    /// The Store edition checks models that arrive other than by download (an import) with this before using them.
+    public func matchesPinnedHashes(at location: URL, fileManager: FileManager = .default) -> Bool {
+        guard isFolder else {
+            guard let sha256 = model.sha256, let size = (try? fileManager.attributesOfItem(atPath: location.path))?[.size] as? Int64 else {
+                return false
+            }
+            var digest = StreamingDigest(.sha256(sha256), size: size)
+            return (try? digest.update(contentsOf: location)) != nil && digest.matches()
+        }
+        guard let pinned = PinnedModelFiles.digests[model.id], !requiredEntries.isEmpty else { return false }
+        var checked = 0
+        for entry in requiredEntries {
+            let base = location.appendingPathComponent(entry)
+            var isDirectory: ObjCBool = false
+            guard fileManager.fileExists(atPath: base.path, isDirectory: &isDirectory) else { return false }
+            let files: [URL] = isDirectory.boolValue
+                ? (fileManager.enumerator(at: base, includingPropertiesForKeys: [.isRegularFileKey])?.compactMap { $0 as? URL }
+                    .filter { (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true } ?? [])
+                : [base]
+            for file in files {
+                let path = String(file.standardizedFileURL.path.dropFirst(location.standardizedFileURL.path.count + 1))
+                guard let expected = pinned[path],
+                      let size = (try? fileManager.attributesOfItem(atPath: file.path))?[.size] as? Int64 else { return false }
+                var digest = StreamingDigest(expected, size: size)
+                guard (try? digest.update(contentsOf: file)) != nil, digest.matches() else { return false }
+                checked += 1
+            }
+        }
+        return checked > 0
+    }
+}
+
 /// One file to fetch, with the hash that proves it.
 public struct RemoteFile: Equatable, Sendable {
     public enum Digest: Equatable, Sendable {
@@ -95,6 +130,8 @@ enum ModelSource {
     static let huggingFace = "https://huggingface.co"
 
     static var base: String {
+        // The Store edition downloads only from the fixed origin its pinned hashes were taken from.
+        if Distribution.isAppStore { return huggingFace }
         let mirror = Defaults[.modelMirrorURL].trimmingCharacters(in: .whitespacesAndNewlines)
         return mirror.isEmpty ? huggingFace : (mirror.hasSuffix("/") ? String(mirror.dropLast()) : mirror)
     }
@@ -146,6 +183,14 @@ enum ModelSource {
         guard found == required else {
             Log.models.error("\(repository, privacy: .public) is missing \(required.subtracting(found).sorted(), privacy: .public)")
             throw ModelError.http(404)
+        }
+        // The Store edition trusts only hashes compiled into the app: every file must be pinned and match.
+        if Distribution.isAppStore {
+            let pinned = PinnedModelFiles.digests[layout.model.id] ?? [:]
+            if let unpinned = files.first(where: { pinned[$0.path] == nil || pinned[$0.path] != $0.digest }) {
+                Log.models.error("\(unpinned.path, privacy: .public) of \(repository, privacy: .public) doesn't match its pinned hash")
+                throw ModelError.checksumMismatch
+            }
         }
         return files
     }

@@ -332,8 +332,13 @@ public extension TextCleaning {
 public enum InsertionMethod: String, Codable, CaseIterable, Sendable {
     /// Pasteboard + synthetic ⌘V, previous clipboard restored afterwards.
     case paste
-    /// Accessibility `AXValue` write at the caret when the element allows it; paste otherwise.
+    #if !APP_STORE
+    /// Accessibility `AXValue` write at the caret when the element allows it; paste otherwise. Not in the Store edition.
     case accessibility
+    #endif
+    /// The text goes on the clipboard and the user pastes it: no synthetic keys at all (the Store edition's fallback,
+    /// docs/app-store/review-notes.md).
+    case copyOnly
 }
 
 public enum InsertionOutcome: Equatable, Sendable {

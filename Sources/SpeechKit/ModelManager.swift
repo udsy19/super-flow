@@ -231,6 +231,23 @@ public final class ModelManager: ModelManaging {
         Log.models.info("Imported \(id, privacy: .public)")
     }
 
+    /// Store edition, after a data import: every installed catalog model that doesn't match its pinned hashes is removed
+    /// (it downloads again, with consent). Returns the ids removed. Runs before the engines load anything.
+    @discardableResult
+    nonisolated public static func removeUnverifiedModels(root: URL, catalog: [ModelDescriptor] = ModelCatalog.all) -> [String] {
+        let fm = FileManager.default
+        var removed: [String] = []
+        for model in catalog where model.url != nil || model.repository != nil {
+            let layout = ModelLayout(model, root: root)
+            guard fm.fileExists(atPath: layout.final.path) else { continue }
+            if !layout.matchesPinnedHashes(at: layout.final.resolvingSymlinksInPath()) {
+                try? fm.removeItem(at: layout.final)
+                removed.append(model.id)
+            }
+        }
+        return removed
+    }
+
     /// Verifies a user-supplied file (its SHA-256) or folder (every required entry) and moves a copy into place.
     nonisolated private static func install(from source: URL, into layout: ModelLayout) throws {
         let fm = FileManager.default
@@ -239,6 +256,8 @@ public final class ModelManager: ModelManaging {
         if layout.isFolder {
             let missing = layout.requiredEntries.filter { !fm.fileExists(atPath: source.appendingPathComponent($0).path) }
             guard missing.isEmpty else { throw ModelError.checksumMismatch }
+            // The Store edition accepts a user-supplied Core ML set only when every file matches its pinned hash.
+            if Distribution.isAppStore, !layout.matchesPinnedHashes(at: source) { throw ModelError.checksumMismatch }
             try fm.createDirectory(at: layout.partial, withIntermediateDirectories: true)
             for entry in layout.requiredEntries {
                 let target = layout.partial.appendingPathComponent(entry)

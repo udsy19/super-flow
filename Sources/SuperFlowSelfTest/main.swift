@@ -36,7 +36,9 @@ if let i = CommandLine.arguments.firstIndex(of: CrashChild.flag), CommandLine.ar
 // Each module owns Sources/SuperFlowSelfTest/<Module>Tests.swift and its register function.
 registerCoreTests()
 registerFlowStoreTests()
+#if !APP_STORE
 registerUpdateKitTests()
+#endif
 registerAudioKitTests()
 registerSpeechKitTests()
 registerInsertionKitTests()

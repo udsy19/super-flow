@@ -1,3 +1,5 @@
+// The Mac App Store edition updates through the Store: this module compiles to nothing there (docs/app-store/architecture.md).
+#if !APP_STORE
 import Foundation
 import CryptoKit
 import Security
@@ -252,3 +254,4 @@ public struct UpdateInstaller {
         exit 0
         """
 }
+#endif

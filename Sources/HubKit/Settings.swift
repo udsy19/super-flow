@@ -1,5 +1,6 @@
 import AppKit
 import ServiceManagement
+import UniformTypeIdentifiers
 import SwiftUI
 import SuperFlowCore
 
@@ -316,9 +317,31 @@ struct SystemPane: View {
                               .shouldAutoLearnWords)
                 }
             }
-            SettingsSection(title: "Updates") {
-                RowsCard {
-                    SettingSwitch("Install updates automatically", detail: updateDetail, .installUpdates)
+            if Distribution.isAppStore {
+                SettingsSection(title: "Typing") {
+                    RowsCard {
+                        SwitchRow(title: "Paste automatically",
+                                  detail: "Pastes your words where you're typing (needs Accessibility). Off: they go on the clipboard for you to paste.",
+                                  isOn: Binding(get: { Defaults[.insertionMethod] != .copyOnly },
+                                                set: { Defaults[.insertionMethod] = $0 ? .paste : .copyOnly }))
+                    }
+                }
+                SettingsSection(title: "Super Flow (direct download)") {
+                    RowsCard {
+                        SettingsRow(title: "Import from Super Flow (direct download)",
+                                    detail: "Copies history, dictionary, notes, meetings and models from the downloaded app. Its data stays as it is.") {
+                            Button("Import…") { DirectEditionImport.run() }
+                                .buttonStyle(HubButtonStyle(variant: .outline, size: .xs))
+                        }
+                    }
+                }
+            }
+            // The Store edition is updated by the App Store; there is no updater to configure.
+            if !Distribution.isAppStore {
+                SettingsSection(title: "Updates") {
+                    RowsCard {
+                        SettingSwitch("Install updates automatically", detail: updateDetail, .installUpdates)
+                    }
                 }
             }
             SettingsSection(title: "Tutorial") {
@@ -337,6 +360,46 @@ struct SystemPane: View {
             ? "Last checked \(HubFormat.dayTitle(Date(timeIntervalSince1970: lastCheck)).lowercased()) at \(HubFormat.time(Date(timeIntervalSince1970: lastCheck)))."
             : "Not checked yet."
         return "Checks GitHub for new versions and installs them while you're idle. \(checked)"
+    }
+}
+
+/// Store edition: the user picks the direct edition's folder (and, optionally, its preferences file); both are copied in
+/// (`DataImport`), and the copy replaces this edition's data at the next launch.
+@MainActor
+enum DirectEditionImport {
+    static func run() {
+        let folder = NSOpenPanel()
+        folder.message = "Choose the Super Flow folder to import. It is copied; the original stays as it is. Quit the downloaded Super Flow first."
+        folder.prompt = "Import"
+        folder.canChooseDirectories = true
+        folder.canChooseFiles = false
+        folder.allowsMultipleSelection = false
+        folder.directoryURL = Distribution.directEditionSupport
+        guard folder.runModal() == .OK, let source = folder.url else { return }
+        do {
+            try DataImport.stage(from: source)
+        } catch {
+            show("Couldn't import", error.localizedDescription)
+            return
+        }
+        let settings = NSOpenPanel()
+        settings.message = "Also import your settings? Choose com.udsy.superflow.plist, or Cancel to keep this app's settings."
+        settings.prompt = "Import Settings"
+        settings.allowedContentTypes = [.propertyList]
+        settings.directoryURL = Distribution.directEditionSupport
+            .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Preferences", isDirectory: true)
+        if settings.runModal() == .OK, let plist = settings.url {
+            do { try DataImport.importSettings(from: plist) } catch { Log.hub.error("Settings import: \(error.localizedDescription, privacy: .public)") }
+        }
+        show("Import ready", "Super Flow will quit now. Open it again to finish: your current data is kept in a folder beside the imported copy.")
+        NSApp.terminate(nil)
+    }
+
+    private static func show(_ title: String, _ text: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = text
+        alert.runModal()
     }
 }
 
@@ -507,7 +570,11 @@ struct ModelsPane: View {
                                                     hasAppleSpeech: Services.models?.state(of: ModelCatalog.appleSpeech.id) == .installed)
         let cleanupModels = ModelCatalog.cleanupModels(isAppleSilicon: Machine.isAppleSilicon, memoryBytes: Machine.memoryBytes)
         let defaultCleanup = Defaults.Keys.cleanupModelID.defaultValue
-        SettingsPage(title: "Models", description: "Speech, cleanup and meeting notes run on these models, on this Mac. They download on their own.") {
+        let pageDescription = Distribution.isAppStore
+            ? "Speech, cleanup and meeting notes run on these models, on this Mac. Turn on downloads to fetch the "
+                + "\(HubFormat.bytes(ModelSummary.pendingBytes())) still missing from Hugging Face."
+            : "Speech, cleanup and meeting notes run on these models, on this Mac. They download on their own."
+        SettingsPage(title: "Models", description: pageDescription) {
             RowsCard {
                 SwitchRow(title: "Download models automatically",
                           detail: Services.models.map { HubFormat.autoDownloadText($0.autoDownloadStatus) { ModelCatalog.descriptor($0)?.name ?? $0 } },
@@ -647,15 +714,23 @@ struct PrivacyPane: View {
                             detail: "Saved in your Library on this Mac. Never uploaded.")
                 PrivacyFact(symbol: "cpu", title: "Local models",
                             detail: "Speech recognition, cleanup and meeting summaries run on this Mac, with no cloud service.")
-                PrivacyFact(symbol: "network", title: "Two kinds of network use",
-                            detail: "Model downloads from Hugging Face and update checks with GitHub. Nothing you say is sent.")
+                if Distribution.isAppStore {
+                    PrivacyFact(symbol: "network", title: "One kind of network use",
+                                detail: "Model downloads from Hugging Face, after you agree to them. Nothing you say is sent.")
+                } else {
+                    PrivacyFact(symbol: "network", title: "Two kinds of network use",
+                                detail: "Model downloads from Hugging Face and update checks with GitHub. Nothing you say is sent.")
+                }
                 PrivacyFact(symbol: "eye.slash", title: "No telemetry", detail: "No analytics, crash reports or tracking. There's no account.")
             }
-            SettingsSection(title: "Context") {
-                RowsCard {
-                    SettingSwitch("Context awareness",
-                              detail: "Reads a little text around the cursor to spell names right and continue your sentence.",
-                              .useAxContext)
+            // Reading text around the cursor needs Accessibility inspection of other apps, which the Store edition doesn't do.
+            if !Distribution.isAppStore {
+                SettingsSection(title: "Context") {
+                    RowsCard {
+                        SettingSwitch("Context awareness",
+                                  detail: "Reads a little text around the cursor to spell names right and continue your sentence.",
+                                  .useAxContext)
+                    }
                 }
             }
             SettingsSection(title: "What to keep") {
